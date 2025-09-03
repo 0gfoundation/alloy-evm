@@ -61,3 +61,13 @@ serde = { version = "1", default-features = false, features = ["derive"] }
 thiserror = { version = "2.0.0", default-features = false }
 serde_json = "1"
 test-case = "3"
+
+# reth-v2.8.1 migration: the original pointed at `github.com/0glabs/revm` rev `968f6c5f` (the
+# 0G stateful precompiles on revm 27) and also patched `op-revm`. That commit's 0G files are
+# identical to revm `57d41378`, whose replay on revm v120 is `eeff0073` in
+# `github.com/0gfoundation/revm`, so the rev maps there. alloy-evm 0.39 no longer depends on
+# `op-revm`, so its two entries are dropped.
+[patch.crates-io]
+revm = { git = "https://github.com/0gfoundation/revm", rev = "eeff00731bc8c29124eca1928ef479e3fe9fb5a3" }
+
+# revm = { path = "../revm/crates/revm" }

@@ -13,11 +13,17 @@ use alloy_primitives::{
     Address, U256,
 };
 use core::fmt::{self, Debug, Display};
+// reth-v2.8.1 migration: `Gas`, `InstructionResult` and `PrecompileError` are imported for the
+// non-fatal stateful precompile error mapping in `run` (see there); the original 0.21-era file
+// already imported them for its own result handling.
 use revm::{
     context::ContextTr,
     handler::{precompile_output_to_interpreter_result, EthPrecompiles, PrecompileProvider},
-    interpreter::{CallInputs, InterpreterResult},
-    precompile::{PrecompileFn, PrecompileId, PrecompileResult, Precompiles},
+    interpreter::{CallInputs, Gas, InstructionResult, InterpreterResult},
+    precompile::{
+        stateful_precompiles::run_stateful_precompile, PrecompileError, PrecompileFn, PrecompileId,
+        PrecompileResult, Precompiles,
+    },
     Context, Journal,
 };
 
@@ -59,13 +65,13 @@ impl PrecompilesMap {
     {
         let dyn_precompiles = self.ensure_dynamic_precompiles();
 
-        // get the current precompile at the address
-        if let Some(dyn_precompile) = dyn_precompiles.inner.remove(address) {
+        // get the current stateless precompile at the address
+        if let Some(dyn_precompile) = dyn_precompiles.stateless.remove(address) {
             // apply the transformation function
             let transformed = f(dyn_precompile);
 
             // update the precompile at the address
-            dyn_precompiles.inner.insert(*address, transformed);
+            dyn_precompiles.stateless.insert(*address, transformed);
         }
     }
 
@@ -100,8 +106,8 @@ impl PrecompilesMap {
     {
         let dyn_precompiles = self.ensure_dynamic_precompiles();
 
-        // apply the transformation to each precompile
-        let entries = dyn_precompiles.inner.drain();
+        // apply the transformation to each stateless precompile
+        let entries = dyn_precompiles.stateless.drain();
         let mut new_map =
             AddressMap::with_capacity_and_hasher(entries.size_hint().0, Default::default());
         for (addr, precompile) in entries {
@@ -113,7 +119,7 @@ impl PrecompilesMap {
             }
         }
 
-        dyn_precompiles.inner = new_map;
+        dyn_precompiles.stateless = new_map;
     }
 
     /// Applies a transformation to the precompile at the given address.
@@ -159,7 +165,7 @@ impl PrecompilesMap {
         F: FnOnce(Option<DynPrecompile>) -> Option<DynPrecompile>,
     {
         let dyn_precompiles = self.ensure_dynamic_precompiles();
-        let current = dyn_precompiles.inner.remove(address);
+        let current = dyn_precompiles.stateless.remove(address);
 
         // apply the transformation function
         let result = f(current);
@@ -167,7 +173,7 @@ impl PrecompilesMap {
         match result {
             Some(transformed) => {
                 // insert the transformed precompile
-                dyn_precompiles.inner.insert(*address, transformed);
+                dyn_precompiles.stateless.insert(*address, transformed);
                 dyn_precompiles.addresses.insert(*address);
             }
             None => {
@@ -304,7 +310,9 @@ impl PrecompilesMap {
 
         // Validate all source addresses are precompiles before making any changes
         for (source, _dest) in &moves {
-            if self.get(source).is_none() {
+            // reth-v2.8.1 migration: `move_precompiles` is new upstream after alloy-evm 0.21; it
+            // called `get`, which this commit renames to `get_stateless`.
+            if self.get_stateless(source).is_none() {
                 return Err(MovePrecompileError::NotAPrecompile(*source));
             }
         }
@@ -469,9 +477,17 @@ impl PrecompilesMap {
                 Cow::Owned(owned) => owned,
             };
 
-            for (&addr, pc) in static_precompiles.inner().iter() {
-                dynamic.inner.insert(addr, DynPrecompile(Box::new(pc.clone())));
+            // reth-v2.8.1 migration: the original rewrote the 0.21 loop (which wrapped each
+            // `PrecompileFn` in a closure) to read `stateless()`; the loop body here is upstream's
+            // current one, with only the same `inner` -> `stateless` renames applied.
+            for (&addr, pc) in static_precompiles.stateless().iter() {
+                dynamic.stateless.insert(addr, DynPrecompile(Box::new(pc.clone())));
                 dynamic.addresses.insert(addr);
+            }
+
+            for addr in static_precompiles.stateful().iter() {
+                dynamic.stateful.insert(*addr);
+                dynamic.addresses.insert(*addr);
             }
 
             self.precompiles = PrecompilesKind::Dynamic(dynamic);
@@ -485,12 +501,15 @@ impl PrecompilesMap {
 
     /// Returns an iterator over the [`PrecompileId`]s of the installed precompiles.
     pub fn identifiers(&self) -> impl Iterator<Item = &PrecompileId> {
+        // reth-v2.8.1 migration: `identifiers` is new upstream after alloy-evm 0.21. It read the
+        // revm `inner()` map and the dynamic `inner` field, which are `stateless()` / `stateless`
+        // after the 0G revm fork and this commit; stateful precompiles have no `PrecompileId`.
         match &self.precompiles {
             PrecompilesKind::Builtin(precompiles) => {
-                Either::Left(precompiles.inner().values().map(|p| p.precompile_id()))
+                Either::Left(precompiles.stateless().values().map(|p| p.precompile_id()))
             }
             PrecompilesKind::Dynamic(dyn_precompiles) => {
-                Either::Right(dyn_precompiles.inner.values().map(|p| p.precompile_id()))
+                Either::Right(dyn_precompiles.stateless.values().map(|p| p.precompile_id()))
             }
         }
     }
@@ -509,12 +528,16 @@ impl PrecompilesMap {
     ///
     /// This method first checks the static precompile map, and if not found,
     /// falls back to the dynamic lookup function (if set).
-    pub fn get(&self, address: &Address) -> Option<impl Precompile + '_> {
+    // reth-v2.8.1 migration: the lookup fallback below is new upstream after alloy-evm 0.21; it is
+    // kept inside the renamed method the same way the original merge `3909a40` resolved it.
+    pub fn get_stateless(&self, address: &Address) -> Option<impl Precompile + '_> {
         // First check static precompiles
         let static_result = match &self.precompiles {
-            PrecompilesKind::Builtin(precompiles) => precompiles.get(address).map(Either::Left),
+            PrecompilesKind::Builtin(precompiles) => {
+                precompiles.get_stateless(address).map(Either::Left)
+            }
             PrecompilesKind::Dynamic(dyn_precompiles) => {
-                dyn_precompiles.inner.get(address).map(Either::Right)
+                dyn_precompiles.stateless.get(address).map(Either::Right)
             }
         };
 
@@ -526,6 +549,17 @@ impl PrecompilesMap {
         // Otherwise, try the lookup function if available
         let lookup = self.lookup.as_ref()?;
         lookup.lookup(address).map(Either::Right)
+    }
+
+    /// Check if the given address is stateful precompile.
+    pub fn is_stateful(&self, address: &Address) -> bool {
+        // reth-v2.8.1 migration: matches on the `precompiles` field because upstream turned
+        // `PrecompilesMap` from an enum into a struct after alloy-evm 0.21 (as resolved in
+        // `3909a40`).
+        match &self.precompiles {
+            PrecompilesKind::Builtin(precompiles) => precompiles.is_stateful(address),
+            PrecompilesKind::Dynamic(dyn_precompiles) => dyn_precompiles.stateful.contains(address),
+        }
     }
 }
 
@@ -567,29 +601,74 @@ where
         inputs: &CallInputs,
     ) -> Result<Option<InterpreterResult>, String> {
         // Get the precompile at the address
-        let Some(precompile) = self.get(&inputs.bytecode_address) else {
+        let maybe_stateless = self.get_stateless(&inputs.bytecode_address);
+        if maybe_stateless.is_none() && !self.is_stateful(&inputs.bytecode_address) {
             return Ok(None);
+        }
+
+        // reth-v2.8.1 migration: upstream now passes one `CallInputs` (address, gas limit, static
+        // flag, reservoir) and builds the stateless `PrecompileInput` itself; that branch is kept
+        // as upstream wrote it. The stateful branch passes the same arguments the original did
+        // (bytecode address, input copied to an owned buffer because `context` is borrowed
+        // mutably by the call, gas limit, caller, value, static flag).
+        let precompile_result = match maybe_stateless {
+            Some(precompile) => {
+                let (block, tx, cfg, journaled_state, _, local) = context.all_mut();
+                let _span =
+                    tracing::trace_span!("precompile", name = precompile.precompile_id().name(),)
+                        .entered();
+                precompile.call(PrecompileInput {
+                    data: inputs.input.as_bytes_local(local).as_ref(),
+                    gas: inputs.gas_limit,
+                    reservoir: inputs.reservoir,
+                    caller: inputs.caller,
+                    value: inputs.call_value(),
+                    is_static: inputs.is_static,
+                    internals: EvmInternals::new(journaled_state, block, cfg, tx),
+                    target_address: inputs.target_address,
+                    bytecode_address: inputs.bytecode_address,
+                })
+            }
+            None => {
+                let input_bytes = inputs.input.as_bytes(context).to_vec();
+                run_stateful_precompile(
+                    inputs.bytecode_address,
+                    &input_bytes,
+                    inputs.gas_limit,
+                    inputs.caller,
+                    inputs.call_value(),
+                    inputs.is_static,
+                    context,
+                )
+            }
         };
 
-        let (block, tx, cfg, journaled_state, _, local) = context.all_mut();
-
-        let precompile_output = {
-            let _span =
-                tracing::trace_span!("precompile", name = precompile.precompile_id().name(),)
-                    .entered();
-            precompile.call(PrecompileInput {
-                data: inputs.input.as_bytes_local(local).as_ref(),
-                gas: inputs.gas_limit,
-                reservoir: inputs.reservoir,
-                caller: inputs.caller,
-                value: inputs.call_value(),
-                is_static: inputs.is_static,
-                internals: EvmInternals::new(journaled_state, block, cfg, tx),
-                target_address: inputs.target_address,
-                bytecode_address: inputs.bytecode_address,
-            })
-        }
-        .map_err(|e| e.to_string())?;
+        // reth-v2.8.1 migration: upstream maps every `Err` to a fatal error string, because in
+        // revm 43 a precompile only returns `Err` for fatal errors and reports halts inside its
+        // output. The 0G revm fork keeps the non-fatal `PrecompileError` variants the stateful
+        // precompiles return (e.g. invalid input, static-call violation, out of gas). The original
+        // handled them as a halt of the call, not a fatal error:
+        //   Err(PrecompileError::Fatal(e)) => return Err(e),
+        //   Err(e) => result = if e.is_oog() { PrecompileOOG } else { PrecompileError },
+        // so the same split is kept: fatal errors still abort, the others halt the call. The halt
+        // spends all gas, as upstream's `precompile_output_to_interpreter_result` does for halts
+        // (revm 29 discarded the remaining gas of a halted call frame, with the same effect).
+        // `matches!(OutOfGas)` stands in for `is_oog()`, which revm 43 no longer has on
+        // `PrecompileError`.
+        let precompile_output = match precompile_result {
+            Ok(output) => output,
+            Err(e) if e.is_fatal() => return Err(e.to_string()),
+            Err(e) => {
+                let result = if matches!(e, PrecompileError::OutOfGas) {
+                    InstructionResult::PrecompileOOG
+                } else {
+                    InstructionResult::PrecompileError
+                };
+                let mut gas = Gas::new(inputs.gas_limit);
+                gas.spend_all();
+                return Ok(Some(InterpreterResult::new(result, Default::default(), gas)));
+            }
+        };
 
         Ok(Some(precompile_output_to_interpreter_result(precompile_output, inputs.gas_limit)))
     }
@@ -602,7 +681,7 @@ where
     }
 
     fn contains(&self, address: &Address) -> bool {
-        self.get(address).is_some()
+        self.get_stateless(address).is_some() || self.is_stateful(address)
     }
 }
 
@@ -656,8 +735,12 @@ impl core::fmt::Debug for DynPrecompile {
 /// unlike the static `Precompiles` struct from revm.
 #[derive(Default)]
 pub struct DynPrecompiles {
-    /// Precompiles
-    inner: AddressMap<DynPrecompile>,
+    /// Stateless Precompiles
+    stateless: AddressMap<DynPrecompile>,
+    /// Stateful Precompiles
+    // reth-v2.8.1 migration: `AddressSet` instead of the original `HashSet<Address>`, matching
+    // the `AddressMap` / `AddressSet` types upstream now uses for the other two fields.
+    stateful: AddressSet,
     /// Addresses of precompile
     addresses: AddressSet,
 }
@@ -666,7 +749,8 @@ impl DynPrecompiles {
     /// Consumes the type and returns an iterator over the addresses and the corresponding
     /// precompile.
     pub fn into_precompiles(self) -> impl Iterator<Item = (Address, DynPrecompile)> {
-        self.inner.into_iter()
+        // reth-v2.8.1 migration: renamed field, as the original merge `3909a40` did.
+        self.stateless.into_iter()
     }
 }
 
@@ -1011,7 +1095,7 @@ mod tests {
         // using the dynamic precompiles interface
         let dyn_precompile = match &spec_precompiles.precompiles {
             PrecompilesKind::Dynamic(dyn_precompiles) => {
-                dyn_precompiles.inner.get(&identity_address).unwrap()
+                dyn_precompiles.stateless.get(&identity_address).unwrap()
             }
             _ => panic!("Expected dynamic precompiles"),
         };
@@ -1047,7 +1131,7 @@ mod tests {
         // get the modified precompile and check it
         let dyn_precompile = match &spec_precompiles.precompiles {
             PrecompilesKind::Dynamic(dyn_precompiles) => {
-                dyn_precompiles.inner.get(&identity_address).unwrap()
+                dyn_precompiles.stateless.get(&identity_address).unwrap()
             }
             _ => panic!("Expected dynamic precompiles"),
         };
@@ -1171,13 +1255,15 @@ mod tests {
             }
         });
 
+        // reth-v2.8.1 migration: this test is new upstream after alloy-evm 0.21; its `get` calls
+        // are renamed to `get_stateless` as in the original merge `3909a40`.
         // Test that static precompiles still work
         let identity_address = address!("0x0000000000000000000000000000000000000004");
-        assert!(spec_precompiles.get(&identity_address).is_some());
+        assert!(spec_precompiles.get_stateless(&identity_address).is_some());
 
         // Test dynamic lookup for matching address
         let dynamic_address = address!("0xDEAD000000000000000000000000000000000001");
-        let dynamic_precompile = spec_precompiles.get(&dynamic_address);
+        let dynamic_precompile = spec_precompiles.get_stateless(&dynamic_address);
         assert!(dynamic_precompile.is_some(), "Dynamic precompile should be found");
 
         // Execute the dynamic precompile
@@ -1202,7 +1288,7 @@ mod tests {
 
         // Test non-matching address returns None
         let non_matching_address = address!("0x1234000000000000000000000000000000000001");
-        assert!(spec_precompiles.get(&non_matching_address).is_none());
+        assert!(spec_precompiles.get_stateless(&non_matching_address).is_none());
     }
 
     #[test]
@@ -1232,9 +1318,11 @@ mod tests {
             previous.and_then(|lookup| lookup.lookup(address))
         });
 
-        assert!(spec_precompiles.get(&previous_lookup_address).is_some());
-        assert!(spec_precompiles.get(&mapped_lookup_address).is_some());
-        assert!(spec_precompiles.get(&missing_address).is_none());
+        // reth-v2.8.1 migration: test new upstream after alloy-evm 0.21; `get` renamed to
+        // `get_stateless` by this commit.
+        assert!(spec_precompiles.get_stateless(&previous_lookup_address).is_some());
+        assert!(spec_precompiles.get_stateless(&mapped_lookup_address).is_some());
+        assert!(spec_precompiles.get_stateless(&missing_address).is_none());
     }
 
     #[test]
@@ -1248,7 +1336,7 @@ mod tests {
         let test_input = Bytes::from_static(b"test data");
         let gas_limit = 1000;
 
-        let precompile = spec_precompiles.get(&identity_address);
+        let precompile = spec_precompiles.get_stateless(&identity_address);
         assert!(precompile.is_some(), "Identity precompile should exist");
 
         let result = precompile
@@ -1269,14 +1357,14 @@ mod tests {
 
         let nonexistent_address = address!("0x0000000000000000000000000000000000000099");
         assert!(
-            spec_precompiles.get(&nonexistent_address).is_none(),
+            spec_precompiles.get_stateless(&nonexistent_address).is_none(),
             "Non-existent precompile should not be found"
         );
 
         let mut dynamic_precompiles = spec_precompiles;
         dynamic_precompiles.ensure_dynamic_precompiles();
 
-        let dyn_precompile = dynamic_precompiles.get(&identity_address);
+        let dyn_precompile = dynamic_precompiles.get_stateless(&identity_address);
         assert!(
             dyn_precompile.is_some(),
             "Identity precompile should exist after conversion to dynamic"
@@ -1315,26 +1403,28 @@ mod tests {
         let test_input = Bytes::from_static(b"test data");
         let gas_limit = 1000;
 
+        // reth-v2.8.1 migration: the `move_precompiles` tests are new upstream after alloy-evm
+        // 0.21; their `get` calls are renamed to `get_stateless` by this commit.
         // Verify the precompile exists at original address
-        assert!(spec_precompiles.get(&identity_address).is_some());
-        assert!(spec_precompiles.get(&new_address).is_none());
+        assert!(spec_precompiles.get_stateless(&identity_address).is_some());
+        assert!(spec_precompiles.get_stateless(&new_address).is_none());
 
         // Move the precompile
         spec_precompiles.move_precompiles([(identity_address, new_address)]).unwrap();
 
         // Verify the precompile moved
         assert!(
-            spec_precompiles.get(&identity_address).is_none(),
+            spec_precompiles.get_stateless(&identity_address).is_none(),
             "Precompile should no longer exist at original address"
         );
         assert!(
-            spec_precompiles.get(&new_address).is_some(),
+            spec_precompiles.get_stateless(&new_address).is_some(),
             "Precompile should exist at new address"
         );
 
         // Verify the moved precompile works correctly
         let result = spec_precompiles
-            .get(&new_address)
+            .get_stateless(&new_address)
             .unwrap()
             .call(PrecompileInput {
                 data: &test_input,
@@ -1374,7 +1464,7 @@ mod tests {
         spec_precompiles.move_precompiles([(identity_address, identity_address)]).unwrap();
 
         // Precompile should still exist
-        assert!(spec_precompiles.get(&identity_address).is_some());
+        assert!(spec_precompiles.get_stateless(&identity_address).is_some());
     }
 
     #[test]
@@ -1392,11 +1482,11 @@ mod tests {
             .unwrap();
 
         // Original addresses should be empty
-        assert!(spec_precompiles.get(&ecrecover).is_none());
-        assert!(spec_precompiles.get(&sha256).is_none());
+        assert!(spec_precompiles.get_stateless(&ecrecover).is_none());
+        assert!(spec_precompiles.get_stateless(&sha256).is_none());
 
         // New addresses should have the precompiles
-        assert!(spec_precompiles.get(&new_ecrecover).is_some());
-        assert!(spec_precompiles.get(&new_sha256).is_some());
+        assert!(spec_precompiles.get_stateless(&new_ecrecover).is_some());
+        assert!(spec_precompiles.get_stateless(&new_sha256).is_some());
     }
 }
