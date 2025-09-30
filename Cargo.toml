@@ -68,6 +68,11 @@ test-case = "3"
 # `github.com/0gfoundation/revm`, so the rev maps there. alloy-evm 0.39 no longer depends on
 # `op-revm`, so its two entries are dropped.
 [patch.crates-io]
-revm = { git = "https://github.com/0gfoundation/revm", rev = "eeff00731bc8c29124eca1928ef479e3fe9fb5a3" }
+# reth-v2.8.1 migration: `3909a40` (the merge of upstream 0.21.0 into the stateful precompile
+# branch) switched this patch from the git rev to a local `../revm` checkout. Its other extra
+# changes adapted upstream 0.21.0 code that the v0.39.0 base already has, so they are part of the
+# previous commit; this switch is all that is left and is kept as is. Like the original, this
+# commit only builds with a revm checkout at `../revm`; the next commit points back at git.
+# revm = { git = "https://github.com/0gfoundation/revm", rev = "eeff00731bc8c29124eca1928ef479e3fe9fb5a3" }
 
-# revm = { path = "../revm/crates/revm" }
+revm = { path = "../revm/crates/revm" }
