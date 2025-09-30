@@ -64,6 +64,9 @@ thiserror = { version = "2.0.0", default-features = false }
 serde_json = "1"
 test-case = "3"
 
-#[patch.crates-io]
-#revm = { git = "https://github.com/bluealloy/revm", rev = "11b16259" }
-#op-revm = { git = "https://github.com/bluealloy/revm", rev = "11b16259" }
+[patch.crates-io]
+revm = { git = "https://github.com/0gfoundation/revm", rev = "71cbb675f562a6c1ac1fd4eda8618b8a921426b6" }
+op-revm = { git = "https://github.com/0gfoundation/revm", rev = "71cbb675f562a6c1ac1fd4eda8618b8a921426b6", package = "op-revm" }
+
+# revm = { path = "../revm/crates/revm" }
+# op-revm = { path = "../revm/crates/op-revm" }
