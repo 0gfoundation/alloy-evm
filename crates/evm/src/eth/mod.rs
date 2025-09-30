@@ -317,7 +317,7 @@ mod tests {
 
             // precompile should NOT be available in early spec
             assert!(
-                early_evm.precompiles_mut().get(&precompile_addr).is_none(),
+                early_evm.precompiles_mut().get_stateless(&precompile_addr).is_none(),
                 "{name} precompile at {precompile_addr:?} should NOT be available for early spec {early_spec:?}"
             );
 
@@ -330,7 +330,7 @@ mod tests {
 
             // precompile should be available in later spec
             assert!(
-                later_evm.precompiles_mut().get(&precompile_addr).is_some(),
+                later_evm.precompiles_mut().get_stateless(&precompile_addr).is_some(),
                 "{name} precompile at {precompile_addr:?} should be available for later spec {later_spec:?}"
             );
         }
