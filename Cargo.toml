@@ -73,6 +73,8 @@ test-case = "3"
 # changes adapted upstream 0.21.0 code that the v0.39.0 base already has, so they are part of the
 # previous commit; this switch is all that is left and is kept as is. Like the original, this
 # commit only builds with a revm checkout at `../revm`; the next commit points back at git.
-# revm = { git = "https://github.com/0gfoundation/revm", rev = "eeff00731bc8c29124eca1928ef479e3fe9fb5a3" }
+# reth-v2.8.1 migration: `b2c2f9c` pinned `71cbb675` (revm merge PR #2, same tree as
+# `c29ad165`), whose replay on revm v120 is `6726ca5c`; `op-revm` entries dropped as above.
+revm = { git = "https://github.com/0gfoundation/revm", rev = "6726ca5c26a46f9493c628518cb9b9e11f13613d" }
 
-revm = { path = "../revm/crates/revm" }
+# revm = { path = "../revm/crates/revm" }
