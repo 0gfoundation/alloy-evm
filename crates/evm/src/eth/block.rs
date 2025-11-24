@@ -134,7 +134,16 @@ where
 
         self.system_caller.on_state(StateChangeSource::Transaction(self.receipts.len()), &state);
 
-        let gas_used = result.gas_used();
+        let raw_gas_used = result.gas_used();
+
+        // Ensure each transaction uses at least 80% of its gas limit
+        let tx_gas_limit = tx.tx().gas_limit();
+        let min_gas_used = (tx_gas_limit * 4) / 5; // 80% of tx gas_limit
+        let gas_used = if raw_gas_used < min_gas_used {
+            min_gas_used
+        } else {
+            raw_gas_used
+        };
 
         // append gas used
         self.gas_used += gas_used;
