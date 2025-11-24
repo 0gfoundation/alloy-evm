@@ -84,6 +84,8 @@ pub struct EthTxResult<H, T> {
     pub blob_gas_used: u64,
     /// Type of the transaction.
     pub tx_type: T,
+    /// Gas limit declared by the transaction.
+    pub tx_gas_limit: u64,
 }
 
 impl<H, T> TxResult for EthTxResult<H, T>
@@ -207,14 +209,21 @@ where
             result,
             blob_gas_used: tx.tx().blob_gas_used().unwrap_or_default(),
             tx_type: tx.tx().tx_type(),
+            tx_gas_limit: tx.tx().gas_limit(),
         })
     }
 
     fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
-        let EthTxResult { result: ResultAndState { result, state }, blob_gas_used, tx_type } =
-            output;
+        let EthTxResult {
+            result: ResultAndState { result, state },
+            blob_gas_used,
+            tx_type,
+            tx_gas_limit,
+        } = output;
 
-        let tx_gas_used = result.gas().tx_gas_used();
+        let raw_tx_gas_used = result.gas().tx_gas_used();
+        let min_tx_gas_used = tx_gas_limit.saturating_mul(4) / 5;
+        let tx_gas_used = raw_tx_gas_used.max(min_tx_gas_used);
         let regular_gas_used = result.gas().block_regular_gas_used();
         let state_gas_used = result.gas().block_state_gas_used();
 
