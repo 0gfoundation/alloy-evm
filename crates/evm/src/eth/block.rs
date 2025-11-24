@@ -97,6 +97,11 @@ pub struct EthTxResult<H, T> {
     pub blob_gas_used: u64,
     /// Type of the transaction.
     pub tx_type: T,
+    /// Gas limit of the transaction.
+    // reth-v2.8.1 migration: new field. The original 80% minimum below read the gas limit from
+    // the transaction inside `commit_transaction`, which then received the transaction; upstream
+    // now passes only this result to `commit_transaction`, so the limit is carried here.
+    pub tx_gas_limit: u64,
 }
 
 impl<H, T> TxResult for EthTxResult<H, T>
@@ -244,14 +249,33 @@ where
             result,
             blob_gas_used: tx.tx().blob_gas_used().unwrap_or_default(),
             tx_type: tx.tx().tx_type(),
+            tx_gas_limit: tx.tx().gas_limit(),
         })
     }
 
     fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
-        let EthTxResult { result: ResultAndState { result, state }, blob_gas_used, tx_type } =
-            output;
+        let EthTxResult {
+            result: ResultAndState { result, state },
+            blob_gas_used,
+            tx_type,
+            tx_gas_limit,
+        } = output;
 
-        let tx_gas_used = result.gas().tx_gas_used();
+        // reth-v2.8.1 migration: the original read the gas used with `result.gas_used()` into
+        // `raw_gas_used` and named the adjusted value `gas_used`; upstream's equivalent is
+        // `tx_gas_used` (gas after refunds), so the adjusted value keeps that name and flows into
+        // the same places the original's did: the cumulative block gas, the receipt and the
+        // returned gas. The Amsterdam (EIP-8037) regular/state gas counters below are not
+        // adjusted; 0G does not activate Amsterdam.
+        let raw_gas_used = result.gas().tx_gas_used();
+
+        // Ensure each transaction uses at least 80% of its gas limit
+        let min_gas_used = (tx_gas_limit * 4) / 5; // 80% of tx gas_limit
+        let tx_gas_used = if raw_gas_used < min_gas_used {
+            min_gas_used
+        } else {
+            raw_gas_used
+        };
         let regular_gas_used = result.gas().block_regular_gas_used();
         let state_gas_used = result.gas().block_state_gas_used();
 
