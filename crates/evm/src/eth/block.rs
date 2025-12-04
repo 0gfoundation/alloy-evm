@@ -20,7 +20,7 @@ use alloc::{borrow::Cow, vec::Vec};
 use alloy_consensus::{Header, Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::{eip4895::Withdrawal, eip7685::Requests, Encodable2718};
 use alloy_hardforks::EthereumHardfork;
-use alloy_primitives::{Bytes, Log, B256};
+use alloy_primitives::{address, bytes, Address, Bytes, Log, B256};
 use revm::{
     context::Block,
     context_interface::{result::ResultAndState, Cfg},
@@ -357,6 +357,28 @@ where
             .db_mut()
             .increment_balances(balance_increments)
             .map_err(|_| BlockValidationError::IncrementBalanceFailed)?;
+
+        if let Some(withdrawals) = self.ctx.withdrawals.as_deref() {
+            if withdrawals.len() > 1 && withdrawals[0].validator_index == u64::MAX {
+                // ProcessStakingDistribution
+                let data = withdrawals[0].amount_wei().to_be_bytes::<32>();
+                // Bytes::from(value)
+                match self.evm.transact_system_call(
+                    address!("fffffffffffffffffffffffffffffffffffffffe"), 
+                    withdrawals[0].address, 
+                    Bytes::from(data),
+                ) {
+                    Ok(res) => {
+                        self.evm.db_mut().commit(res.state);
+                    },
+                    Err(e) => {
+                        print!("execution failed: {e}");
+                    }
+                };
+                
+            }
+        }
+
 
         // Pre-Amsterdam: use tx_gas_used (with refunds) for the block gas total.
         // Amsterdam+: use max(regular, state) gas without refunds (EIP-8037).
