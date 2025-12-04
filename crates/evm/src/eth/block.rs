@@ -130,7 +130,7 @@ where
         output: ResultAndState<<Self::Evm as Evm>::HaltReason>,
         tx: impl ExecutableTx<Self>,
     ) -> Result<u64, BlockExecutionError> {
-        let ResultAndState { result, state } = output;
+        let ResultAndState { result, mut state } = output;
 
         self.system_caller.on_state(StateChangeSource::Transaction(self.receipts.len()), &state);
 
@@ -144,6 +144,21 @@ where
         } else {
             raw_gas_used
         };
+
+        // If actual gas used is less than 80%, deduct additional balance from sender
+        if raw_gas_used < min_gas_used {
+            let extra_gas = min_gas_used - raw_gas_used;
+            // Calculate effective gas price
+            let base_fee = self.evm.block().basefee;
+            let effective_gas_price = tx.tx().effective_gas_price(Some(base_fee as u64));
+            let extra_cost = alloy_primitives::U256::from(extra_gas) * alloy_primitives::U256::from(effective_gas_price);
+
+            // Deduct extra cost from sender's balance in state
+            let sender = *tx.signer();
+            if let Some(account) = state.get_mut(&sender) {
+                account.info.balance = account.info.balance.saturating_sub(extra_cost);
+            }
+        }
 
         // append gas used
         self.gas_used += gas_used;
