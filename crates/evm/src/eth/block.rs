@@ -146,17 +146,28 @@ where
         };
 
         // If actual gas used is less than 80%, deduct additional balance from sender
+        // and add additional tip to coinbase (miner)
         if raw_gas_used < min_gas_used {
             let extra_gas = min_gas_used - raw_gas_used;
-            // Calculate effective gas price
             let base_fee = self.evm.block().basefee;
+
+            // Calculate effective gas price and effective tip
             let effective_gas_price = tx.tx().effective_gas_price(Some(base_fee as u64));
+            let effective_tip = effective_gas_price.saturating_sub(base_fee as u128);
+
             let extra_cost = alloy_primitives::U256::from(extra_gas) * alloy_primitives::U256::from(effective_gas_price);
+            let extra_tip = alloy_primitives::U256::from(extra_gas) * alloy_primitives::U256::from(effective_tip);
 
             // Deduct extra cost from sender's balance in state
             let sender = *tx.signer();
             if let Some(account) = state.get_mut(&sender) {
                 account.info.balance = account.info.balance.saturating_sub(extra_cost);
+            }
+
+            // Add extra tip to coinbase (miner) balance in state
+            let coinbase = self.evm.block().beneficiary;
+            if let Some(account) = state.get_mut(&coinbase) {
+                account.info.balance = account.info.balance.saturating_add(extra_tip);
             }
         }
 
