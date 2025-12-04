@@ -19,7 +19,7 @@ use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use alloy_consensus::{Header, Transaction, TxReceipt};
 use alloy_eips::{eip4895::Withdrawals, eip7685::Requests, Encodable2718};
 use alloy_hardforks::EthereumHardfork;
-use alloy_primitives::{Log, B256};
+use alloy_primitives::{address, bytes, Address, Bytes, Log, B256};
 use revm::{context_interface::result::ResultAndState, database::State, DatabaseCommit, Inspector};
 
 /// Context for Ethereum block execution.
@@ -217,6 +217,28 @@ where
             .db_mut()
             .increment_balances(balance_increments.clone())
             .map_err(|_| BlockValidationError::IncrementBalanceFailed)?;
+
+        if let Some(withdrawals) = self.ctx.withdrawals.as_deref() {
+            if withdrawals.len() > 1 && withdrawals[0].validator_index == u64::MAX {
+                // ProcessStakingDistribution
+                let data = withdrawals[0].amount_wei().to_be_bytes::<32>();
+                // Bytes::from(value)
+                match self.evm.transact_system_call(
+                    address!("fffffffffffffffffffffffffffffffffffffffe"), 
+                    withdrawals[0].address, 
+                    Bytes::from(data),
+                ) {
+                    Ok(res) => {
+                        self.evm.db_mut().commit(res.state);
+                    },
+                    Err(e) => {
+                        print!("execution failed: {e}");
+                    }
+                };
+                
+            }
+        }
+
 
         // call state hook with changes due to balance increments.
         self.system_caller.try_on_state_with(|| {
