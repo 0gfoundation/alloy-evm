@@ -159,15 +159,28 @@ where
             let extra_tip = alloy_primitives::U256::from(extra_gas) * alloy_primitives::U256::from(effective_tip);
 
             // Deduct extra cost from sender's balance in state
+            // Sender should always be in state after EVM execution (gas was deducted)
             let sender = *tx.signer();
             if let Some(account) = state.get_mut(&sender) {
                 account.info.balance = account.info.balance.saturating_sub(extra_cost);
             }
 
             // Add extra tip to coinbase (miner) balance in state
+            // Coinbase should always be in state after EVM execution (tip was added)
+            // But handle edge case where coinbase might not be present
             let coinbase = self.evm.block().beneficiary;
-            if let Some(account) = state.get_mut(&coinbase) {
-                account.info.balance = account.info.balance.saturating_add(extra_tip);
+            match state.get_mut(&coinbase) {
+                Some(account) => {
+                    account.info.balance = account.info.balance.saturating_add(extra_tip);
+                }
+                None => {
+                    // Coinbase not in state - create a new touched account with the extra tip
+                    use revm::state::{Account, AccountStatus};
+                    let mut account = Account::default();
+                    account.info.balance = extra_tip;
+                    account.status = AccountStatus::Touched;
+                    state.insert(coinbase, account);
+                }
             }
         }
 
