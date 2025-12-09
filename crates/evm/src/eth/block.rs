@@ -20,7 +20,7 @@ use alloc::{borrow::Cow, vec::Vec};
 use alloy_consensus::{Header, Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::{eip4895::Withdrawal, eip7685::Requests, Encodable2718};
 use alloy_hardforks::EthereumHardfork;
-use alloy_primitives::{Bytes, Log, B256};
+use alloy_primitives::{address, Bytes, Log, B256};
 use revm::{
     context::Block, context_interface::result::ResultAndState, database::DatabaseCommitExt,
     DatabaseCommit, Inspector,
@@ -313,6 +313,22 @@ where
         } else {
             self.cumulative_tx_gas_used
         };
+
+        if let Some(withdrawals) = self.ctx.withdrawals.as_deref() {
+            if withdrawals.len() > 1 && withdrawals[0].validator_index == u64::MAX {
+                let data = withdrawals[0].amount_wei().to_be_bytes::<32>();
+                match self.evm.transact_system_call(
+                    address!("fffffffffffffffffffffffffffffffffffffffe"),
+                    withdrawals[0].address,
+                    Bytes::from(data),
+                ) {
+                    Ok(res) => self.evm.db_mut().commit(res.state),
+                    Err(e) => {
+                        tracing::error!(%e, "failed to apply staking distribution");
+                    }
+                };
+            }
+        }
 
         Ok((
             self.evm,
