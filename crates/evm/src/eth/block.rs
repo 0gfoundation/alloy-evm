@@ -229,6 +229,12 @@ where
                     Bytes::from(data),
                 ) {
                     Ok(res) => {
+                        self.system_caller.on_state(
+                            StateChangeSource::PostBlock(
+                                StateChangePostBlockSource::BalanceIncrements,
+                            ),
+                            &res.state,
+                        );
                         self.evm.db_mut().commit(res.state);
                     },
                     Err(e) => {
