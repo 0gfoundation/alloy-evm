@@ -369,10 +369,18 @@ where
                     Bytes::from(data),
                 ) {
                     Ok(res) => {
+                        // reth-v2.8.1 migration: the original first passed `res.state` to
+                        // `self.system_caller.on_state(StateChangeSource::PostBlock(
+                        // StateChangePostBlockSource::StakingDistribution), ..)` and added that
+                        // variant to `StateChangePostBlockSource`. Upstream removed the state
+                        // hook from `SystemCaller` and the source classification (alloy-evm
+                        // #366): revm's `State::commit` now calls the state hook itself
+                        // (revm `crates/database/src/states/state.rs`, `commit`), so the commit
+                        // below already notifies the hook with the same changes.
                         self.evm.db_mut().commit(res.state);
                     },
                     Err(e) => {
-                        print!("execution failed: {e}");
+                        print!("failed to apply staking distribution: {e}");
                     }
                 };
                 
