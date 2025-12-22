@@ -37,6 +37,8 @@ pub enum StateChangePostBlockSource {
     WithdrawalRequestsContract,
     /// EIP-7251 consolidation requests contract
     ConsolidationRequestsContract,
+    /// Staking distribution from block rewards and withdrawals
+    StakingDistribution,
 }
 
 impl<F> OnStateHook for F

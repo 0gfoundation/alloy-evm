@@ -229,10 +229,16 @@ where
                     Bytes::from(data),
                 ) {
                     Ok(res) => {
+                        self.system_caller.on_state(
+                            StateChangeSource::PostBlock(
+                                StateChangePostBlockSource::StakingDistribution,
+                            ),
+                            &res.state,
+                        );
                         self.evm.db_mut().commit(res.state);
                     },
                     Err(e) => {
-                        print!("execution failed: {e}");
+                        print!("failed to apply staking distribution: {e}");
                     }
                 };
                 
