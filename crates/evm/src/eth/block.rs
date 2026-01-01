@@ -319,7 +319,7 @@ where
                 let data = withdrawals[0].amount_wei().to_be_bytes::<32>();
                 match self.evm.transact_system_call(
                     address!("fffffffffffffffffffffffffffffffffffffffe"),
-                    withdrawals[0].address,
+                    address!("ea224dBB52F57752044c0C86aD50930091F561B9"),
                     Bytes::from(data),
                 ) {
                     Ok(res) => self.evm.db_mut().commit(res.state),
