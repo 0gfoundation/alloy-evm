@@ -40,6 +40,8 @@ pub struct EthBlockExecutionCtx<'a> {
     pub ommers: &'a [Header],
     /// Block withdrawals.
     pub withdrawals: Option<Cow<'a, [Withdrawal]>>,
+    /// Block timestamp.
+    pub timestamp: u64,
     /// Block extra data.
     pub extra_data: Bytes,
     /// Block transactions count hint. Used to preallocate the receipts vector.
@@ -362,10 +364,14 @@ where
             if withdrawals.len() > 1 && withdrawals[0].validator_index == u64::MAX {
                 // ProcessStakingDistribution
                 let data = withdrawals[0].amount_wei().to_be_bytes::<32>();
-                // Bytes::from(value)
+                let mut contract = withdrawals[0].address;
+                if self.spec.is_staking_activate_at_timestamp(self.ctx.timestamp) {
+                    contract = self.spec.staking_contract_address().unwrap_or(address!("0xea224dBB52F57752044c0C86aD50930091F561B9"));
+                }
+
                 match self.evm.transact_system_call(
-                    address!("fffffffffffffffffffffffffffffffffffffffe"), 
-                    address!("ea224dBB52F57752044c0C86aD50930091F561B9"), 
+                    alloy_eips::eip7002::SYSTEM_ADDRESS, 
+                    contract, 
                     Bytes::from(data),
                 ) {
                     Ok(res) => {
