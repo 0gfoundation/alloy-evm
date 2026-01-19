@@ -11,6 +11,12 @@ pub trait EthExecutorSpec: EthereumHardforks {
     ///
     /// Used by [`super::eip6110::parse_deposits_from_receipts`].
     fn deposit_contract_address(&self) -> Option<Address>;
+
+    /// Address of staking contract.
+    fn staking_contract_address(&self) -> Option<Address>;
+
+    /// Convenience method to check if staking contract is active at a given timestamp.
+    fn is_staking_activate_at_timestamp(&self, timestamp: u64) -> bool;
 }
 
 /// Basic Ethereum specification.
@@ -55,5 +61,13 @@ impl EthereumHardforks for EthSpec {
 impl EthExecutorSpec for EthSpec {
     fn deposit_contract_address(&self) -> Option<Address> {
         self.deposit_contract_address
+    }
+
+    fn staking_contract_address(&self) -> Option<Address> {
+        None
+    }
+
+    fn is_staking_activate_at_timestamp(&self, timestamp: u64) -> bool {
+        false
     }
 }
