@@ -169,7 +169,7 @@ impl<'a> EvmInternals<'a> {
         Self { internals: Box::new(EvmInternalsImpl(journal)), block_env }
     }
 
-    /// Returns the  evm's block information.
+    /// Returns the evm's block information.
     pub const fn block_env(&self) -> impl Block + 'a {
         self.block_env
     }
