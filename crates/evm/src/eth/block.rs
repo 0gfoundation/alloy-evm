@@ -52,12 +52,13 @@ pub struct EthBlockExecutionCtx<'a> {
     /// [`super::EthBlockExecutor::finish`]. Including it in the `requests` slice **before** the
     /// block assembler computes `requests_hash` is what guarantees the proposer-built sealed
     /// `block.header.requests_hash` matches the verifier's reconstruction (CL re-runs
-    /// `CalcRequestsHash` over the same wire bytes). See plan §1.6.4 / §2.A.10.
+    /// `CalcRequestsHash` over the same wire bytes). The bytes pass through verbatim — no
+    /// decode → re-encode — so proposer and verifier emit byte-equal `executionRequests` lists.
     ///
     /// `None` on the block-replay path (`context_for_block`) — the historical block's 0xf0 raw
-    /// bytes have no on-chain source (not in body, not in receipts), and the 0G `validate_block_post_execution`
-    /// is lenient (overwrites header rather than diffs), so omitting the entry is byte-for-byte
-    /// equivalent to the pre-fix replay behaviour.
+    /// bytes have no on-chain source (not in body, not in receipts), so replay skips the
+    /// 0xf0 push. The 0G `validate_block_post_execution` tolerates this by overwriting
+    /// `requests_hash` on the in-memory header rather than diffing against the sealed value.
     pub bridge_request_raw: Option<Cow<'a, Bytes>>,
 }
 
@@ -229,21 +230,20 @@ where
             self.evm.db_mut().commit(res.state);
         }
 
-        // 0G: Append the EIP-7685 type-0xf0 bridge entry to the executionRequests list using the
-        // **original SSZ blob** the CL forwarded (not recomputed). Must happen here — before
-        // `EthBlockAssembler::assemble_block` reads `requests` to compute `requests_hash` — so
-        // the proposer-built sealed `block.header.requests_hash` covers the 0xf0 entry. Without
-        // this, the EL header omits 0xf0 while the wire response includes it, and the CL's
-        // re-assembled block hash diverges from `payload.block_hash`.
+        // 0G: Append the EIP-7685 type-0xf0 bridge entry to the executionRequests list using
+        // the **original SSZ blob** the CL forwarded (not recomputed). Must happen here —
+        // before `EthBlockAssembler::assemble_block` reads `requests` to compute
+        // `requests_hash` — so the proposer-built sealed `block.header.requests_hash` covers
+        // the 0xf0 entry and matches what the CL reconstructs from the same wire bytes.
         //
         // Only push when:
         //   * Prague is active (matches the `requests_hash` gate in `EthBlockAssembler`).
         //   * `bridge_request_raw` was supplied (build path = `attrs.bridgeRequests`; verify
         //     path = 0xf0 entry of `payload.executionRequests`). On replay (`context_for_block`)
         //     the field is `None` and we skip — there is no on-chain source to recover the raw
-        //     SSZ from, and the 0G `validate_block_post_execution` is lenient (overwrites
-        //     header without diff), so the omission is byte-equivalent to the pre-fix replay
-        //     path.
+        //     SSZ from. The 0G `validate_block_post_execution` tolerates this by overwriting
+        //     `requests_hash` on the in-memory header rather than diffing against the sealed
+        //     value.
         if prague_active {
             if let Some(raw) = self.ctx.bridge_request_raw.as_deref() {
                 requests.push_request_with_type(bridge::BRIDGE_REQUEST_TYPE, raw.clone());
