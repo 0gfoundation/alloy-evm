@@ -193,9 +193,14 @@ where
     fn finish(
         mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
-        let prague_active = self
-            .spec
-            .is_prague_active_at_timestamp(self.evm.block().timestamp.saturating_to());
+        // Single source of truth for the block timestamp used by every fork-activation gate in
+        // this function (Prague for the standard EIP-7685 entries, Bridge for the 0xf0 entry +
+        // system call). `ctx.timestamp` is the value the caller wrote into both `EthBlockExecutionCtx`
+        // and `evm.block().timestamp` when constructing the executor, so the two sources are
+        // equal by construction — bind once to avoid silent drift if either is later refactored.
+        let timestamp = self.ctx.timestamp;
+        let prague_active = self.spec.is_prague_active_at_timestamp(timestamp);
+        let bridge_active = self.spec.is_bridge_active_at_timestamp(timestamp);
 
         let mut requests = if prague_active {
             // Collect all EIP-6110 deposits
@@ -219,7 +224,7 @@ where
         // post-block balance increments. Gated by `EthExecutorSpec::is_bridge_active_at_timestamp`.
         if let Some(res) = bridge::transact_bridge_contract_call(
             &self.spec,
-            self.ctx.timestamp,
+            timestamp,
             self.ctx.bridge_request.as_deref(),
             &mut self.evm,
         )? {
@@ -237,14 +242,19 @@ where
         // the 0xf0 entry and matches what the CL reconstructs from the same wire bytes.
         //
         // Only push when:
-        //   * Prague is active (matches the `requests_hash` gate in `EthBlockAssembler`).
+        //   * Bridge fork is active at `timestamp` — same gate as `transact_bridge_contract_call`
+        //     above. Gating on Prague alone would allow a pre-Bridge / post-Prague block (or a
+        //     byzantine `engine_newPayloadV4` carrying a 0xf0 entry) to seal a `requests_hash`
+        //     that covers a 0xf0 entry the bridge system call did NOT execute — silent state
+        //     divergence from the network. Bridge-active strictly implies Prague-active (chain
+        //     spec invariant), so this is monotonically stricter than the old Prague gate.
         //   * `bridge_request_raw` was supplied (build path = `attrs.bridgeRequests`; verify
         //     path = 0xf0 entry of `payload.executionRequests`). On replay (`context_for_block`)
         //     the field is `None` and we skip — there is no on-chain source to recover the raw
         //     SSZ from. The 0G `validate_block_post_execution` tolerates this by overwriting
         //     `requests_hash` on the in-memory header rather than diffing against the sealed
         //     value.
-        if prague_active {
+        if bridge_active {
             if let Some(raw) = self.ctx.bridge_request_raw.as_deref() {
                 requests.push_request_with_type(bridge::BRIDGE_REQUEST_TYPE, raw.clone());
             }
@@ -287,7 +297,7 @@ where
                 // ProcessStakingDistribution
                 let data = withdrawals[0].amount_wei().to_be_bytes::<32>();
                 let mut contract = withdrawals[0].address;
-                if self.spec.is_staking_activate_at_timestamp(self.ctx.timestamp) {
+                if self.spec.is_staking_activate_at_timestamp(timestamp) {
                     contract = self.spec.staking_contract_address().unwrap_or(address!("0xea224dBB52F57752044c0C86aD50930091F561B9"));
                 }
 
