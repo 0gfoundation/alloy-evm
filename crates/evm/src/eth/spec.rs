@@ -83,7 +83,7 @@ impl EthExecutorSpec for EthSpec {
         None
     }
 
-    fn is_staking_activate_at_timestamp(&self, timestamp: u64) -> bool {
+    fn is_staking_activate_at_timestamp(&self, _timestamp: u64) -> bool {
         false
     }
 }

@@ -20,7 +20,7 @@ use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use alloy_consensus::{Header, Transaction, TxReceipt};
 use alloy_eips::{eip4895::Withdrawals, eip7685::Requests, Encodable2718};
 use alloy_hardforks::EthereumHardfork;
-use alloy_primitives::{address, bytes, Address, Bytes, Log, B256};
+use alloy_primitives::{address, Bytes, Log, B256};
 use revm::{context_interface::result::ResultAndState, database::State, DatabaseCommit, Inspector};
 
 /// Context for Ethereum block execution.
