@@ -8,7 +8,10 @@ use core::{
 };
 use revm::{
     context::{BlockEnv, CfgEnv, Evm as RevmEvm, TxEnv},
-    context_interface::result::{EVMError, HaltReason, ResultAndState},
+    context_interface::{
+        journaled_state::{JournalTr, PerpDelta},
+        result::{EVMError, HaltReason, ResultAndState},
+    },
     handler::{instructions::EthInstructions, EthFrame, EthPrecompiles, PrecompileProvider},
     inspector::NoOpInspector,
     interpreter::{interpreter::EthInterpreter, InterpreterResult},
@@ -233,6 +236,13 @@ where
         let Context { block: block_env, cfg: cfg_env, journaled_state, .. } = self.inner.ctx;
 
         (journaled_state.database, EvmEnv { block_env, cfg_env })
+    }
+
+    fn take_perp_delta(&mut self) -> PerpDelta {
+        // Reach the live journal before `finish` (above) destructures `self.inner.ctx` and
+        // drops it. `journaled_state` is the concrete `Journal<DB>`, which implements
+        // `JournalTr::take_perp_delta`.
+        self.inner.ctx.journaled_state.take_perp_delta()
     }
 
     fn set_inspector_enabled(&mut self, enabled: bool) {

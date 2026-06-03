@@ -7,6 +7,7 @@ use core::{error::Error, fmt::Debug, hash::Hash};
 use revm::{
     context::{result::ExecutionResult, BlockEnv},
     context_interface::{
+        journaled_state::PerpDelta,
         result::{HaltReasonTr, ResultAndState},
         ContextTr,
     },
@@ -144,6 +145,16 @@ pub trait Evm {
         Self: Sized,
     {
         self.finish().1
+    }
+
+    /// Drains the block's net off-trie PerpDEX writes (the in-memory orderbook, "PerpState")
+    /// from the live journal, returning them as a [`PerpDelta`].
+    ///
+    /// Must be called while the EVM is still alive — before `finish`/`into_db` consume it and
+    /// drop the journal. The default returns an empty delta, so EVMs without a perp journal
+    /// (and any other [`Evm`] implementor) keep compiling unchanged.
+    fn take_perp_delta(&mut self) -> PerpDelta {
+        PerpDelta::default()
     }
 
     /// Determines whether additional transactions should be inspected or not.
