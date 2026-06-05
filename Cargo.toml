@@ -65,6 +65,6 @@ serde_json = "1"
 test-case = "3"
 
 [patch.crates-io]
-# PerpState: revm + op-revm pinned at the perpstate-journal branch HEAD (off-trie perp journal API).
-revm = { git = "https://github.com/0gfoundation/revm", rev = "d3c8480c2bb6ff447366e2d2ff37c8accb0db4bb" }
-op-revm = { git = "https://github.com/0gfoundation/revm", rev = "d3c8480c2bb6ff447366e2d2ff37c8accb0db4bb", package = "op-revm" }
+# PerpState: revm + op-revm pinned at the revm perpdex branch HEAD (off-trie perp journal + commitment).
+revm = { git = "https://github.com/0gfoundation/revm", rev = "a7b0699dd52ac33e9e5f4b8e9165157a72d80d91" }
+op-revm = { git = "https://github.com/0gfoundation/revm", rev = "a7b0699dd52ac33e9e5f4b8e9165157a72d80d91", package = "op-revm" }
