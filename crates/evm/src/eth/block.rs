@@ -6,6 +6,7 @@ use super::{
     dao_fork, eip6110,
     receipt_builder::{AlloyReceiptBuilder, ReceiptBuilder, ReceiptBuilderCtx},
     spec::{EthExecutorSpec, EthSpec},
+    staking::apply_staking_slashings,
     EthEvmFactory,
 };
 use crate::{
@@ -18,7 +19,14 @@ use crate::{
 };
 use alloc::{borrow::Cow, vec::Vec};
 use alloy_consensus::{Header, Transaction, TransactionEnvelope, TxReceipt};
-use alloy_eips::{eip4895::Withdrawal, eip7685::Requests, Encodable2718};
+// reth-v2.8.1 migration: `Withdrawals` is imported for the `slashed` field below; upstream changed
+// `withdrawals` to a `[Withdrawal]` slice and dropped this import, while the original `slashed`
+// kept the `Withdrawals` type `withdrawals` had at the time.
+use alloy_eips::{
+    eip4895::{Withdrawal, Withdrawals},
+    eip7685::Requests,
+    Encodable2718,
+};
 use alloy_hardforks::EthereumHardfork;
 use alloy_primitives::{address, bytes, Address, Bytes, Log, B256};
 use revm::{
@@ -40,6 +48,8 @@ pub struct EthBlockExecutionCtx<'a> {
     pub ommers: &'a [Header],
     /// Block withdrawals.
     pub withdrawals: Option<Cow<'a, [Withdrawal]>>,
+    /// Slashed validator entries from the consensus layer.
+    pub slashed: Option<Cow<'a, Withdrawals>>,
     /// Block timestamp.
     pub timestamp: u64,
     /// Block extra data.
@@ -389,7 +399,31 @@ where
                         print!("execution failed: failed to apply staking distribution: {e}");
                     }
                 };
-                
+            }
+        }
+
+        if let Some(slashed) = self.ctx.slashed.as_deref() {
+            if !slashed.is_empty() {
+                let staking_contract = self
+                    .spec
+                    .staking_contract_address()
+                    .unwrap_or(address!("0xea224dBB52F57752044c0C86aD50930091F561B9"));
+
+                match apply_staking_slashings(&mut self.evm, slashed, staking_contract) {
+                    Ok(results) => {
+                        for res in results {
+                            // reth-v2.8.1 migration: the original first called
+                            // `self.system_caller.on_state(StateChangeSource::PostBlock(
+                            // StateChangePostBlockSource::StakingSlashing), &res.state)` and
+                            // added that variant; as for the staking distribution above, the
+                            // commit now notifies the state hook itself.
+                            self.evm.db_mut().commit(res.state);
+                        }
+                    }
+                    Err(e) => {
+                        print!("execution failed: failed to apply staking slashings: {e}");
+                    }
+                }
             }
         }
 
