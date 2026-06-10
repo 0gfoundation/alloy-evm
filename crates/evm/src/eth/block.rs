@@ -4,6 +4,7 @@ use super::{
     dao_fork, eip6110,
     receipt_builder::{AlloyReceiptBuilder, ReceiptBuilder, ReceiptBuilderCtx},
     spec::{EthExecutorSpec, EthSpec},
+    staking::apply_staking_slashings,
     EthEvmFactory,
 };
 use crate::{
@@ -33,6 +34,8 @@ pub struct EthBlockExecutionCtx<'a> {
     pub ommers: &'a [Header],
     /// Block withdrawals.
     pub withdrawals: Option<Cow<'a, Withdrawals>>,
+    /// Slashed validator entries from the consensus layer.
+    pub slashed: Option<Cow<'a, Withdrawals>>,
     /// Block timestamp.
     pub timestamp: u64,
 }
@@ -247,7 +250,32 @@ where
                         print!("execution failed: failed to apply staking distribution: {e}");
                     }
                 };
-                
+            }
+        }
+
+        if let Some(slashed) = self.ctx.slashed.as_deref() {
+            if !slashed.is_empty() {
+                let staking_contract = self
+                    .spec
+                    .staking_contract_address()
+                    .unwrap_or(address!("0xea224dBB52F57752044c0C86aD50930091F561B9"));
+
+                match apply_staking_slashings(&mut self.evm, slashed, staking_contract) {
+                    Ok(results) => {
+                        for res in results {
+                            self.system_caller.on_state(
+                                StateChangeSource::PostBlock(
+                                    StateChangePostBlockSource::StakingSlashing,
+                                ),
+                                &res.state,
+                            );
+                            self.evm.db_mut().commit(res.state);
+                        }
+                    }
+                    Err(e) => {
+                        print!("execution failed: failed to apply staking slashings: {e}");
+                    }
+                }
             }
         }
 
