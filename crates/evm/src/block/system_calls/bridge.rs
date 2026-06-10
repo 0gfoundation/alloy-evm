@@ -36,6 +36,10 @@ pub const BRIDGE_REQUEST_TYPE: u8 = 0xf0;
 /// no fee charged, no coinbase reward, executed against the same EVM state as block transactions.
 /// The state delta is **not** committed by this function — the caller is responsible for
 /// wiring the result into [`SystemCaller::on_state`] and calling `db.commit(...)`.
+///
+/// Gate behavior is covered end-to-end by the executor integration tests (`bridge_tests`) in
+/// the downstream reth repository, which exercise this function through a real EVM. This crate
+/// intentionally does not mirror the gate logic in unit tests, as such mirrors drift silently.
 #[inline]
 pub(crate) fn transact_bridge_contract_call<Halt>(
     spec: &impl EthExecutorSpec,
@@ -76,116 +80,4 @@ pub(crate) fn transact_bridge_contract_call<Halt>(
         }
     };
     Ok(Some(res))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloy_eips::eip7002::SYSTEM_ADDRESS as EIP7002_SYSTEM_ADDRESS;
-    use alloy_hardforks::{EthereumHardfork, EthereumHardforks, ForkCondition};
-    use alloy_primitives::{address, Address};
-
-    /// Lightweight spec used to drive the gate logic. The wider `Evm` integration is exercised
-    /// by an integration test in the consuming reth crate against a real revm instance.
-    #[derive(Debug, Clone, Default)]
-    struct MockSpec {
-        bridge_address: Option<Address>,
-        bridge_active: bool,
-    }
-
-    impl EthereumHardforks for MockSpec {
-        fn ethereum_fork_activation(&self, _fork: EthereumHardfork) -> ForkCondition {
-            ForkCondition::Never
-        }
-    }
-
-    impl EthExecutorSpec for MockSpec {
-        fn deposit_contract_address(&self) -> Option<Address> {
-            None
-        }
-        fn staking_contract_address(&self) -> Option<Address> {
-            None
-        }
-        fn is_staking_activate_at_timestamp(&self, _t: u64) -> bool {
-            false
-        }
-        fn bridge_contract_address(&self) -> Option<Address> {
-            self.bridge_address
-        }
-        fn is_bridge_active_at_timestamp(&self, _t: u64) -> bool {
-            self.bridge_active
-        }
-    }
-
-    // The real `Evm` trait is large; the gate logic only needs the `transact_system_call`
-    // entry point. We define a narrow shim that mirrors the real signature for the gate paths
-    // and pass it through explicitly. This avoids pulling in a full EVM database harness for a
-    // pure decision-table test.
-    //
-    // For broader integration coverage (calldata round-trip, real state commit, EIP-7002
-    // ordering) see the integration test in the consuming reth crate.
-    fn run<F>(spec: &MockSpec, timestamp: u64, calldata: Option<&Bytes>, mut sink: F) -> bool
-    where
-        F: FnMut(Address, Address, Bytes),
-    {
-        // Mirror the gate logic from `transact_bridge_contract_call`. Returns `true` if the
-        // happy path would have been taken.
-        if !spec.is_bridge_active_at_timestamp(timestamp) {
-            return false;
-        }
-        let Some(target) = spec.bridge_contract_address() else { return false };
-        let cd = match calldata {
-            Some(b) if !b.is_empty() => b.clone(),
-            _ => return false,
-        };
-        sink(SYSTEM_ADDRESS, target, cd);
-        true
-    }
-
-    const BRIDGE_ADDR: Address = address!("0x00000000000000000000000000000000000000B0");
-
-    #[test]
-    fn no_op_when_fork_inactive() {
-        let spec =
-            MockSpec { bridge_address: Some(BRIDGE_ADDR), bridge_active: false };
-        let cd = Bytes::from_static(&[1, 2, 3, 4]);
-        let invoked =
-            run(&spec, 100, Some(&cd), |_, _, _| panic!("should not invoke when inactive"));
-        assert!(!invoked);
-    }
-
-    #[test]
-    fn no_op_when_address_missing() {
-        let spec = MockSpec { bridge_address: None, bridge_active: true };
-        let cd = Bytes::from_static(&[1, 2, 3, 4]);
-        let invoked = run(&spec, 100, Some(&cd), |_, _, _| panic!("should not invoke"));
-        assert!(!invoked);
-    }
-
-    #[test]
-    fn no_op_when_calldata_empty() {
-        let spec = MockSpec { bridge_address: Some(BRIDGE_ADDR), bridge_active: true };
-        let invoked = run(&spec, 100, None, |_, _, _| panic!("should not invoke for None"));
-        assert!(!invoked);
-        let empty = Bytes::new();
-        let invoked2 =
-            run(&spec, 100, Some(&empty), |_, _, _| panic!("should not invoke for empty"));
-        assert!(!invoked2);
-    }
-
-    #[test]
-    fn happy_path_uses_system_address_and_target() {
-        let spec = MockSpec { bridge_address: Some(BRIDGE_ADDR), bridge_active: true };
-        let cd = Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]);
-        let mut captured: Option<(Address, Address, Bytes)> = None;
-        let invoked = run(&spec, 100, Some(&cd), |caller, target, data| {
-            captured = Some((caller, target, data));
-        });
-        assert!(invoked);
-        let (caller, target, data) = captured.expect("happy path captured");
-        assert_eq!(caller, SYSTEM_ADDRESS);
-        assert_eq!(caller, EIP7002_SYSTEM_ADDRESS, "bridge reuses EIP-7002 SYSTEM_ADDRESS");
-        assert_eq!(target, BRIDGE_ADDR);
-        assert_eq!(data, Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]));
-    }
 }
