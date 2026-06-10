@@ -55,6 +55,13 @@ pub(crate) fn transact_bridge_contract_call<Halt>(
     };
 
     // Gate 3 + 4: non-empty calldata supplied by the engine API
+    //
+    // Note: an *empty message list* still produces non-empty calldata — ABI encoding of
+    // `executeRemoteMessages([])` is the 4-byte selector plus the empty-array head — so
+    // post-fork every block executes the system call exactly once, even with zero messages.
+    // Do NOT "optimize" this by skipping empty batches: whether the system call runs at all
+    // is consensus-sensitive, and any such change must land atomically in both the block
+    // build and block verify paths. A one-sided change immediately forks the state root.
     let cd = match calldata {
         Some(b) if !b.is_empty() => b.clone(),
         _ => return Ok(None),
