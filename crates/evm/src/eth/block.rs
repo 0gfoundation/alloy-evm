@@ -36,7 +36,7 @@ pub struct EthBlockExecutionCtx<'a> {
     pub withdrawals: Option<Cow<'a, Withdrawals>>,
     /// Block timestamp.
     pub timestamp: u64,
-    /// 0G: Pre-encoded ABI calldata for `Bridge.executeRemoteMessages(InboundMessage[])`.
+    /// 0G: Pre-encoded ABI calldata for `Bridge.parkRemoteMessages(InboundMessage[])`.
     ///
     /// Populated by the EL engine API when it observes an EIP-7685 request with type byte
     /// `0xf0` on a payload built after the Bridge fork (private 0G namespace). `None` when
