@@ -199,6 +199,15 @@ where
         // and `evm.block().timestamp` when constructing the executor, so the two sources are
         // equal by construction — bind once to avoid silent drift if either is later refactored.
         let timestamp = self.ctx.timestamp;
+        // The "equal by construction" invariant above is only enforced by convention at the call
+        // site; assert it in debug builds so an accidental divergence between the two timestamp
+        // sources fails loudly in tests rather than silently mis-gating a fork activation. No
+        // effect on release behavior.
+        debug_assert_eq!(
+            timestamp,
+            self.evm.block().timestamp.saturating_to::<u64>(),
+            "ctx.timestamp must equal evm.block().timestamp",
+        );
         let prague_active = self.spec.is_prague_active_at_timestamp(timestamp);
         let bridge_active = self.spec.is_bridge_active_at_timestamp(timestamp);
 
