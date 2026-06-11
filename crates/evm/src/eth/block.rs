@@ -228,6 +228,18 @@ where
             self.ctx.bridge_request.as_deref(),
             &mut self.evm,
         )? {
+            // parkRemoteMessages is revert/halt-free by contract design (SYSTEM_ADDRESS gate plus a
+            // write-only loop), so a non-success here means that invariant was broken — e.g. a bad
+            // contract upgrade, or an EL/CL calldata-encoding regression. The messages were then NOT
+            // parked while the CL nonce watermark still advances, silently dropping them. Surface it
+            // loudly. The result is deterministic on both the build and verify paths, so logging
+            // here cannot itself cause consensus divergence.
+            if !res.result.is_success() {
+                tracing::error!(
+                    result = ?res.result,
+                    "bridge parkRemoteMessages system call did not succeed; inbound messages were not parked"
+                );
+            }
             self.system_caller.on_state(
                 StateChangeSource::PostBlock(StateChangePostBlockSource::BridgeExecution),
                 &res.state,
