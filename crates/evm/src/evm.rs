@@ -12,6 +12,7 @@ use revm::{
         ContextTr,
     },
     inspector::{JournalExt, NoOpInspector},
+    state::EvmState,
     DatabaseCommit, Inspector,
 };
 
@@ -155,6 +156,23 @@ pub trait Evm {
     /// (and any other [`Evm`] implementor) keep compiling unchanged.
     fn take_perp_delta(&mut self) -> PerpDelta {
         PerpDelta::default()
+    }
+
+    /// Folds the block's net off-trie PerpDEX delta into the on-trie commitment anchor (0x1003) —
+    /// the off-trie analogue of the state root (catalog #16d). Call at block end AFTER
+    /// [`Evm::take_perp_delta`] and BEFORE `finish`/`into_db`. The fold is a journaled `sstore`;
+    /// because `finish`/`into_db` only extract `journaled_state.database` (dropping the journal
+    /// overlay), this drains the journal via `finalize()` and RETURNS the resulting state changeset.
+    /// The caller MUST commit it into the block's `State` DB so the commitment write becomes a
+    /// bundle transition (hence enters the state root). `delta` is the value returned by
+    /// `take_perp_delta`. The default returns an empty changeset (no-op for EVMs without a perp
+    /// journal), so committing it is also a no-op.
+    fn finalize_perp_commitment(
+        &mut self,
+        delta: &PerpDelta,
+    ) -> Result<EvmState, revm::precompile::PrecompileError> {
+        let _ = delta;
+        Ok(EvmState::default())
     }
 
     /// Determines whether additional transactions should be inspected or not.

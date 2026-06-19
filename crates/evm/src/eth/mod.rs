@@ -17,6 +17,7 @@ use revm::{
     interpreter::{interpreter::EthInterpreter, InterpreterResult},
     precompile::{PrecompileSpecId, Precompiles},
     primitives::hardfork::SpecId,
+    state::EvmState,
     Context, ExecuteEvm, InspectEvm, Inspector, MainBuilder, MainContext, SystemCallEvm,
 };
 
@@ -243,6 +244,23 @@ where
         // drops it. `journaled_state` is the concrete `Journal<DB>`, which implements
         // `JournalTr::take_perp_delta`.
         self.inner.ctx.journaled_state.take_perp_delta()
+    }
+
+    fn finalize_perp_commitment(
+        &mut self,
+        delta: &PerpDelta,
+    ) -> Result<EvmState, revm::precompile::PrecompileError> {
+        if delta.is_empty() {
+            return Ok(EvmState::default());
+        }
+        // Fold the block's net delta into the on-trie 0x1003 commitment anchor (#16d): a journaled
+        // `sstore`. `finish`/`into_db` only extract `journaled_state.database`, so this overlay write
+        // would otherwise be dropped — drain it via `finalize()` and hand the changeset back so the
+        // block executor commits it into `State<DB>` as a bundle transition (the per-call flush is
+        // gone). `take_perp_delta` already drained the off-trie overlay; the journal now holds only
+        // the single 0x1003 write, so `finalize()` returns exactly that account.
+        revm::precompile::perp_dex::storage::finalize_block_commitment(self.ctx_mut(), delta)?;
+        Ok(self.inner.ctx.journaled_state.finalize())
     }
 
     fn set_inspector_enabled(&mut self, enabled: bool) {

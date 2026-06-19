@@ -2,6 +2,7 @@ use crate::{Evm, EvmEnv};
 use alloy_primitives::{Address, Bytes};
 use revm::context::{either, BlockEnv};
 use revm::context_interface::journaled_state::PerpDelta;
+use revm::state::EvmState;
 
 impl<L, R> Evm for either::Either<L, R>
 where
@@ -90,6 +91,13 @@ where
         // Forward to the active variant; the trait default would silently drop the inner
         // EVM's delta, so this explicit forward is required (every method here is explicit).
         either::for_both!(self, evm => evm.take_perp_delta())
+    }
+
+    fn finalize_perp_commitment(
+        &mut self,
+        delta: &PerpDelta,
+    ) -> Result<EvmState, revm::precompile::PrecompileError> {
+        either::for_both!(self, evm => evm.finalize_perp_commitment(delta))
     }
 
     fn set_inspector_enabled(&mut self, enabled: bool) {
