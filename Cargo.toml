@@ -65,7 +65,8 @@ serde_json = "1"
 test-case = "3"
 
 [patch.crates-io]
-# PerpState #16d: revm + op-revm pinned at the revm `perpdex-16d-blockend` HEAD
-# (per-block commitment + block-end serialization deferral + finalize_block_commitment).
-revm = { git = "https://github.com/0gfoundation/revm", rev = "42f45593d9ac62e30d602adeedceee472787fff2" }
-op-revm = { git = "https://github.com/0gfoundation/revm", rev = "42f45593d9ac62e30d602adeedceee472787fff2", package = "op-revm" }
+# PerpState: revm + op-revm pinned at revm `perpdex` HEAD (per-block commitment +
+# block-end serialization deferral + finalize_block_commitment, flip-aware margin
+# reservation, isolated-margin bad-debt routing). Kept in lockstep with 0g-reth's pin.
+revm = { git = "https://github.com/0gfoundation/revm", rev = "3f492d405c93cfc935659846f0570de8ab560568" }
+op-revm = { git = "https://github.com/0gfoundation/revm", rev = "3f492d405c93cfc935659846f0570de8ab560568", package = "op-revm" }
