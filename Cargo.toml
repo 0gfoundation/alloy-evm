@@ -65,8 +65,9 @@ serde_json = "1"
 test-case = "3"
 
 [patch.crates-io]
-# PerpState: revm + op-revm pinned at revm `perpdex` HEAD (per-block commitment +
-# block-end serialization deferral + finalize_block_commitment, flip-aware margin
-# reservation, isolated-margin bad-debt routing). Kept in lockstep with 0g-reth's pin.
-revm = { git = "https://github.com/0gfoundation/revm", rev = "3f492d405c93cfc935659846f0570de8ab560568" }
-op-revm = { git = "https://github.com/0gfoundation/revm", rev = "3f492d405c93cfc935659846f0570de8ab560568", package = "op-revm" }
+# PerpState: revm + op-revm pinned at revm `perpdex-parallel` HEAD (the parallel
+# place/cancel spike on top of perpdex — replay mode + classify_perp_tx + the
+# set_perp_replay JournalTr seam this branch's Evm::set_perp_replay delegates to;
+# all perp-parallel-gated, off by default). Kept in lockstep with 0g-reth's pin.
+revm = { git = "https://github.com/0gfoundation/revm", rev = "68def0d058c54af31fc0dc23b5330e8d66cc0b9e" }
+op-revm = { git = "https://github.com/0gfoundation/revm", rev = "68def0d058c54af31fc0dc23b5330e8d66cc0b9e", package = "op-revm" }

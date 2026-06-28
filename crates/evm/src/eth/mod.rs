@@ -9,7 +9,7 @@ use core::{
 use revm::{
     context::{BlockEnv, CfgEnv, Evm as RevmEvm, TxEnv},
     context_interface::{
-        journaled_state::{JournalTr, PerpDelta},
+        journaled_state::{JournalTr, PerpDelta, PerpReplayResult},
         result::{EVMError, HaltReason, ResultAndState},
     },
     handler::{instructions::EthInstructions, EthFrame, EthPrecompiles, PrecompileProvider},
@@ -261,6 +261,13 @@ where
         // the single 0x1003 write, so `finalize()` returns exactly that account.
         revm::precompile::perp_dex::storage::finalize_block_commitment(self.ctx_mut(), delta)?;
         Ok(self.inner.ctx.journaled_state.finalize())
+    }
+
+    fn set_perp_replay(&mut self, results: Vec<PerpReplayResult>) {
+        // `journaled_state` is the concrete `Journal<DB>`, which implements
+        // `JournalTr::set_perp_replay` (a no-op unless revm-context's `perp-parallel` feature is on,
+        // which the node enables). The 0x…1003 precompile pops these in block order during execution.
+        self.inner.ctx.journaled_state.set_perp_replay(results);
     }
 
     fn set_inspector_enabled(&mut self, enabled: bool) {

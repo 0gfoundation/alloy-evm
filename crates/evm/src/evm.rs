@@ -7,7 +7,7 @@ use core::{error::Error, fmt::Debug, hash::Hash};
 use revm::{
     context::{result::ExecutionResult, BlockEnv},
     context_interface::{
-        journaled_state::PerpDelta,
+        journaled_state::{PerpDelta, PerpReplayResult},
         result::{HaltReasonTr, ResultAndState},
         ContextTr,
     },
@@ -173,6 +173,16 @@ pub trait Evm {
     ) -> Result<EvmState, revm::precompile::PrecompileError> {
         let _ = delta;
         Ok(EvmState::default())
+    }
+
+    /// Loads pre-computed trading-call results into the journal for REPLAY mode (canonical parallel
+    /// execution, catalog #21 step 4b): the parallel pre-phase already ran every place/cancel against
+    /// the shared book, so during this block's serial transaction execution the `0x…1003` precompile
+    /// returns these in block order instead of re-verifying / re-matching. Call ONCE after building
+    /// the EVM and BEFORE executing the block's transactions. `results` is empty for a serial block.
+    /// The default is a no-op (EVMs without a perp journal, or serial execution).
+    fn set_perp_replay(&mut self, results: Vec<PerpReplayResult>) {
+        let _ = results;
     }
 
     /// Determines whether additional transactions should be inspected or not.

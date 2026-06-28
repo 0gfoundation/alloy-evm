@@ -1,7 +1,7 @@
 use crate::{Evm, EvmEnv};
 use alloy_primitives::{Address, Bytes};
 use revm::context::{either, BlockEnv};
-use revm::context_interface::journaled_state::PerpDelta;
+use revm::context_interface::journaled_state::{PerpDelta, PerpReplayResult};
 use revm::state::EvmState;
 
 impl<L, R> Evm for either::Either<L, R>
@@ -98,6 +98,11 @@ where
         delta: &PerpDelta,
     ) -> Result<EvmState, revm::precompile::PrecompileError> {
         either::for_both!(self, evm => evm.finalize_perp_commitment(delta))
+    }
+
+    fn set_perp_replay(&mut self, results: Vec<PerpReplayResult>) {
+        // Explicit forward (the trait default would silently drop the queue, like take_perp_delta).
+        either::for_both!(self, evm => evm.set_perp_replay(results))
     }
 
     fn set_inspector_enabled(&mut self, enabled: bool) {
