@@ -41,6 +41,8 @@ pub enum StateChangePostBlockSource {
     StakingDistribution,
     /// 0G Bridge inbound message execution (EIP-7685 type byte `0xf0`, private 0G namespace).
     BridgeExecution,
+    /// Staking slash metadata applied via `slashValidator` system calls
+    StakingSlashing,
 }
 
 impl<F> OnStateHook for F
