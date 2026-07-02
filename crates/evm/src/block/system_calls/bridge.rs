@@ -76,6 +76,15 @@ pub(crate) fn transact_bridge_contract_call<Halt>(
     let res = match evm.transact_system_call(SYSTEM_ADDRESS, target, cd) {
         Ok(res) => res,
         Err(e) => {
+            // Classified as an Internal (not Validation) BlockExecutionError, deliberately
+            // unlike the sibling system calls (eip7002/7251 use BlockValidationError::
+            // *ContractCall). parkRemoteMessages performs no token calls and cannot revert or
+            // halt — a deterministic revert/halt comes back as Ok(res) with a non-success
+            // result and is committed+logged by the caller. So reaching this Err arm means a
+            // non-deterministic infrastructure fault (e.g. an EVMError::Database), which is a
+            // node-local problem, not a defect in the block. Marking it Validation would let a
+            // transient local DB error invalidate a block the rest of the network accepts;
+            // Internal keeps the failure attributed to this node.
             return Err(BlockExecutionError::msg(format!(
                 "0G bridge system call execution failed: {e}"
             )));
