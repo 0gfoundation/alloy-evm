@@ -58,10 +58,11 @@ pub struct EthBlockExecutionCtx<'a> {
     /// `CalcRequestsHash` over the same wire bytes). The bytes pass through verbatim — no
     /// decode → re-encode — so proposer and verifier emit byte-equal `executionRequests` lists.
     ///
-    /// `None` on the block-replay path (`context_for_block`) — the historical block's 0xf0 raw
-    /// bytes have no on-chain source (not in body, not in receipts), so replay skips the
-    /// 0xf0 push. The 0G `validate_block_post_execution` tolerates this by overwriting
-    /// `requests_hash` on the in-memory header rather than diffing against the sealed value.
+    /// On the block-replay path (`context_for_block`) the raw blob is recovered from the block
+    /// body (`BlockBody.bridge_requests`, carried on-chain for exactly this purpose), so replay
+    /// re-pushes the 0xf0 entry verbatim and the re-executed block reproduces the sealed
+    /// `requests_hash`. It is only `None` for a body that carries no bridge blob (pre-Bridge
+    /// blocks).
     pub bridge_request_raw: Option<Cow<'a, Bytes>>,
 }
 
@@ -273,11 +274,9 @@ where
         //     divergence from the network. Bridge-active strictly implies Prague-active (chain
         //     spec invariant), so this is monotonically stricter than the old Prague gate.
         //   * `bridge_request_raw` was supplied (build path = `attrs.bridgeRequests`; verify
-        //     path = 0xf0 entry of `payload.executionRequests`). On replay (`context_for_block`)
-        //     the field is `None` and we skip — there is no on-chain source to recover the raw
-        //     SSZ from. The 0G `validate_block_post_execution` tolerates this by overwriting
-        //     `requests_hash` on the in-memory header rather than diffing against the sealed
-        //     value.
+        //     path = 0xf0 entry of `payload.executionRequests`; replay path = `context_for_block`
+        //     recovers it from `BlockBody.bridge_requests`). Only a body with no bridge blob
+        //     (pre-Bridge block) yields `None`, in which case no 0xf0 entry is pushed.
         if bridge_active {
             if let Some(raw) = self.ctx.bridge_request_raw.as_deref() {
                 requests.push_request_with_type(bridge::BRIDGE_REQUEST_TYPE, raw.clone());
