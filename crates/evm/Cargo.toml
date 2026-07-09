@@ -51,7 +51,8 @@ std = [
     "op-revm?/std",
     "thiserror/std",
     "op-alloy-consensus?/std",
-    "alloy-rpc-types-eth?/std"
+    "alloy-rpc-types-eth?/std",
+    "tracing/std"
 ]
 op = ["op-revm", "op-alloy-consensus"]
 overrides = ["dep:alloy-rpc-types-eth"]
