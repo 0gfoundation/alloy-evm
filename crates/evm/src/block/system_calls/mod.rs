@@ -9,6 +9,7 @@ use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::{Bytes, B256};
 use revm::DatabaseCommit;
 
+pub mod bridge;
 mod eip2935;
 mod eip4788;
 mod eip7002;
