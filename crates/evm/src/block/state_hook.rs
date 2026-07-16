@@ -39,6 +39,8 @@ pub enum StateChangePostBlockSource {
     ConsolidationRequestsContract,
     /// Staking distribution from block rewards and withdrawals
     StakingDistribution,
+    /// 0G Bridge inbound message execution (EIP-7685 type byte `0xf0`, private 0G namespace).
+    BridgeExecution,
     /// Staking slash metadata applied via `slashValidator` system calls
     StakingSlashing,
 }
