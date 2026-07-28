@@ -4,11 +4,13 @@ use super::{
     dao_fork, eip6110,
     receipt_builder::{AlloyReceiptBuilder, ReceiptBuilder, ReceiptBuilderCtx},
     spec::{EthExecutorSpec, EthSpec},
+    staking::apply_staking_slashings,
     EthEvmFactory,
 };
 use crate::{
     block::{
         state_changes::{balance_increment_state, post_block_balance_increments},
+        system_calls::bridge,
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockExecutorFactory,
         BlockExecutorFor, BlockValidationError, ExecutableTx, OnStateHook,
         StateChangePostBlockSource, StateChangeSource, SystemCaller,
@@ -19,7 +21,7 @@ use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use alloy_consensus::{Header, Transaction, TxReceipt};
 use alloy_eips::{eip4895::Withdrawals, eip7685::Requests, Encodable2718};
 use alloy_hardforks::EthereumHardfork;
-use alloy_primitives::{address, bytes, Address, Bytes, Log, B256};
+use alloy_primitives::{address, Bytes, Log, B256};
 use revm::{context_interface::result::ResultAndState, database::State, DatabaseCommit, Inspector};
 
 /// Context for Ethereum block execution.
@@ -33,8 +35,35 @@ pub struct EthBlockExecutionCtx<'a> {
     pub ommers: &'a [Header],
     /// Block withdrawals.
     pub withdrawals: Option<Cow<'a, Withdrawals>>,
+    /// Slashed validator entries from the consensus layer.
+    pub slashed: Option<Cow<'a, Withdrawals>>,
     /// Block timestamp.
     pub timestamp: u64,
+    /// 0G: Pre-encoded ABI calldata for `Bridge.parkRemoteMessages(InboundMessage[])`.
+    ///
+    /// Populated by the EL engine API when it observes an EIP-7685 request with type byte
+    /// `0xf0` on a payload built after the Bridge fork (private 0G namespace). `None` when
+    /// either the fork is inactive, no bridge messages were emitted by CL, or the chain spec
+    /// does not configure a bridge contract address.
+    pub bridge_request: Option<Cow<'a, Bytes>>,
+    /// 0G: Original SSZ-encoded `BridgeRequests` blob the CL forwarded on
+    /// `engine_forkchoiceUpdatedV4.payloadAttributes.bridgeRequests` (build path) or extracted
+    /// from `payload.executionRequests` 0xf0 entry (verify path).
+    ///
+    /// Distinct from `bridge_request` (ABI calldata for the system call). This raw SSZ blob is
+    /// what gets re-emitted as the `0xf0` EIP-7685 entry in the requests list returned by
+    /// [`super::EthBlockExecutor::finish`]. Including it in the `requests` slice **before** the
+    /// block assembler computes `requests_hash` is what guarantees the proposer-built sealed
+    /// `block.header.requests_hash` matches the verifier's reconstruction (CL re-runs
+    /// `CalcRequestsHash` over the same wire bytes). The bytes pass through verbatim — no
+    /// decode → re-encode — so proposer and verifier emit byte-equal `executionRequests` lists.
+    ///
+    /// On the block-replay path (`context_for_block`) the raw blob is recovered from the block
+    /// body (`BlockBody.bridge_requests`, carried on-chain for exactly this purpose), so replay
+    /// re-pushes the 0xf0 entry verbatim and the re-executed block reproduces the sealed
+    /// `requests_hash`. It is only `None` for a body that carries no bridge blob (pre-Bridge
+    /// blocks).
+    pub bridge_request_raw: Option<Cow<'a, Bytes>>,
 }
 
 /// Block executor for Ethereum.
@@ -168,10 +197,25 @@ where
     fn finish(
         mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
-        let requests = if self
-            .spec
-            .is_prague_active_at_timestamp(self.evm.block().timestamp.saturating_to())
-        {
+        // Single source of truth for the block timestamp used by every fork-activation gate in
+        // this function (Prague for the standard EIP-7685 entries, Bridge for the 0xf0 entry +
+        // system call). `ctx.timestamp` is the value the caller wrote into both `EthBlockExecutionCtx`
+        // and `evm.block().timestamp` when constructing the executor, so the two sources are
+        // equal by construction — bind once to avoid silent drift if either is later refactored.
+        let timestamp = self.ctx.timestamp;
+        // The "equal by construction" invariant above is only enforced by convention at the call
+        // site; assert it in debug builds so an accidental divergence between the two timestamp
+        // sources fails loudly in tests rather than silently mis-gating a fork activation. No
+        // effect on release behavior.
+        debug_assert_eq!(
+            timestamp,
+            self.evm.block().timestamp.saturating_to::<u64>(),
+            "ctx.timestamp must equal evm.block().timestamp",
+        );
+        let prague_active = self.spec.is_prague_active_at_timestamp(timestamp);
+        let bridge_active = self.spec.is_bridge_active_at_timestamp(timestamp);
+
+        let mut requests = if prague_active {
             // Collect all EIP-6110 deposits
             let deposit_requests =
                 eip6110::parse_deposits_from_receipts(&self.spec, &self.receipts)?;
@@ -187,6 +231,57 @@ where
         } else {
             Requests::default()
         };
+
+        // 0G: Bridge inbound system call. Runs after EIP-7002/7251 post-execution requests
+        // (so witness coverage is co-located with the existing requests pipeline) and before
+        // post-block balance increments. Gated by `EthExecutorSpec::is_bridge_active_at_timestamp`.
+        if let Some(res) = bridge::transact_bridge_contract_call(
+            &self.spec,
+            timestamp,
+            self.ctx.bridge_request.as_deref(),
+            &mut self.evm,
+        )? {
+            // parkRemoteMessages is revert/halt-free by contract design (SYSTEM_ADDRESS gate plus a
+            // write-only loop), so a non-success here means that invariant was broken — e.g. a bad
+            // contract upgrade, or an EL/CL calldata-encoding regression. The messages were then NOT
+            // parked while the CL nonce watermark still advances, silently dropping them. Surface it
+            // loudly. The result is deterministic on both the build and verify paths, so logging
+            // here cannot itself cause consensus divergence.
+            if !res.result.is_success() {
+                tracing::error!(
+                    result = ?res.result,
+                    "bridge parkRemoteMessages system call did not succeed; inbound messages were not parked"
+                );
+            }
+            self.system_caller.on_state(
+                StateChangeSource::PostBlock(StateChangePostBlockSource::BridgeExecution),
+                &res.state,
+            );
+            self.evm.db_mut().commit(res.state);
+        }
+
+        // 0G: Append the EIP-7685 type-0xf0 bridge entry to the executionRequests list using
+        // the **original SSZ blob** the CL forwarded (not recomputed). Must happen here —
+        // before `EthBlockAssembler::assemble_block` reads `requests` to compute
+        // `requests_hash` — so the proposer-built sealed `block.header.requests_hash` covers
+        // the 0xf0 entry and matches what the CL reconstructs from the same wire bytes.
+        //
+        // Only push when:
+        //   * Bridge fork is active at `timestamp` — same gate as `transact_bridge_contract_call`
+        //     above. Gating on Prague alone would allow a pre-Bridge / post-Prague block (or a
+        //     byzantine `engine_newPayloadV4` carrying a 0xf0 entry) to seal a `requests_hash`
+        //     that covers a 0xf0 entry the bridge system call did NOT execute — silent state
+        //     divergence from the network. Bridge-active strictly implies Prague-active (chain
+        //     spec invariant), so this is monotonically stricter than the old Prague gate.
+        //   * `bridge_request_raw` was supplied (build path = `attrs.bridgeRequests`; verify
+        //     path = 0xf0 entry of `payload.executionRequests`; replay path = `context_for_block`
+        //     recovers it from `BlockBody.bridge_requests`). Only a body with no bridge blob
+        //     (pre-Bridge block) yields `None`, in which case no 0xf0 entry is pushed.
+        if bridge_active {
+            if let Some(raw) = self.ctx.bridge_request_raw.as_deref() {
+                requests.push_request_with_type(bridge::BRIDGE_REQUEST_TYPE, raw.clone());
+            }
+        }
 
         let mut balance_increments = post_block_balance_increments(
             &self.spec,
@@ -225,7 +320,7 @@ where
                 // ProcessStakingDistribution
                 let data = withdrawals[0].amount_wei().to_be_bytes::<32>();
                 let mut contract = withdrawals[0].address;
-                if self.spec.is_staking_activate_at_timestamp(self.ctx.timestamp) {
+                if self.spec.is_staking_activate_at_timestamp(timestamp) {
                     contract = self.spec.staking_contract_address().unwrap_or(address!("0xea224dBB52F57752044c0C86aD50930091F561B9"));
                 }
 
@@ -247,7 +342,32 @@ where
                         print!("execution failed: failed to apply staking distribution: {e}");
                     }
                 };
-                
+            }
+        }
+
+        if let Some(slashed) = self.ctx.slashed.as_deref() {
+            if !slashed.is_empty() {
+                let staking_contract = self
+                    .spec
+                    .staking_contract_address()
+                    .unwrap_or(address!("0xea224dBB52F57752044c0C86aD50930091F561B9"));
+
+                match apply_staking_slashings(&mut self.evm, slashed, staking_contract) {
+                    Ok(results) => {
+                        for res in results {
+                            self.system_caller.on_state(
+                                StateChangeSource::PostBlock(
+                                    StateChangePostBlockSource::StakingSlashing,
+                                ),
+                                &res.state,
+                            );
+                            self.evm.db_mut().commit(res.state);
+                        }
+                    }
+                    Err(e) => {
+                        print!("execution failed: failed to apply staking slashings: {e}");
+                    }
+                }
             }
         }
 
