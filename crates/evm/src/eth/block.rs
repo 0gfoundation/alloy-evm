@@ -118,6 +118,11 @@ pub struct EthTxResult<H, T> {
     pub tx_gas_limit: u64,
 }
 
+const fn charged_transaction_gas(raw_gas_used: u64, gas_limit: u64) -> u64 {
+    let minimum = gas_limit / 5 * 4 + gas_limit % 5 * 4 / 5;
+    raw_gas_used.max(minimum)
+}
+
 impl<H, T> TxResult for EthTxResult<H, T>
 where
     H: Send + 'static,
@@ -252,8 +257,7 @@ where
         } = output;
 
         let raw_tx_gas_used = result.gas().tx_gas_used();
-        let min_tx_gas_used = tx_gas_limit.saturating_mul(4) / 5;
-        let tx_gas_used = raw_tx_gas_used.max(min_tx_gas_used);
+        let tx_gas_used = charged_transaction_gas(raw_tx_gas_used, tx_gas_limit);
         let regular_gas_used = result.gas().block_regular_gas_used();
         let state_gas_used = result.gas().block_state_gas_used();
 
@@ -287,9 +291,10 @@ where
     ) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
         // Single source of truth for the block timestamp used by every fork-activation gate in
         // this function (Prague for the standard EIP-7685 entries, Bridge for the 0xf0 entry +
-        // system call). `ctx.timestamp` is the value the caller wrote into both `EthBlockExecutionCtx`
-        // and `evm.block().timestamp` when constructing the executor, so the two sources are
-        // equal by construction — bind once to avoid silent drift if either is later refactored.
+        // system call). `ctx.timestamp` is the value the caller wrote into both
+        // `EthBlockExecutionCtx` and `evm.block().timestamp` when constructing the
+        // executor, so the two sources are equal by construction — bind once to avoid
+        // silent drift if either is later refactored.
         let timestamp = self.ctx.timestamp;
         // The "equal by construction" invariant above is only enforced by convention at the call
         // site; assert it in debug builds so an accidental divergence between the two timestamp
@@ -297,7 +302,7 @@ where
         // effect on release behavior.
         debug_assert_eq!(
             timestamp,
-            self.evm.block().timestamp.saturating_to::<u64>(),
+            self.evm.block().timestamp().saturating_to::<u64>(),
             "ctx.timestamp must equal evm.block().timestamp",
         );
         let prague_active = self.spec.is_prague_active_at_timestamp(timestamp);
@@ -330,10 +335,11 @@ where
         )? {
             // parkRemoteMessages is revert/halt-free by contract design (SYSTEM_ADDRESS gate plus a
             // write-only loop), so a non-success here means that invariant was broken — e.g. a bad
-            // contract upgrade, or an EL/CL calldata-encoding regression. The messages were then NOT
-            // parked while the CL nonce watermark still advances, silently dropping them. Surface it
-            // loudly. The result is deterministic on both the build and verify paths, so logging
-            // here cannot itself cause consensus divergence.
+            // contract upgrade, or an EL/CL calldata-encoding regression. The messages were then
+            // NOT parked while the CL nonce watermark still advances, silently dropping
+            // them. Surface it loudly. The result is deterministic on both the build
+            // and verify paths, so logging here cannot itself cause consensus
+            // divergence.
             if !res.result.is_success() {
                 tracing::error!(
                     result = ?res.result,
@@ -352,19 +358,19 @@ where
         // Only push when:
         //   * Bridge fork is active at `timestamp` — same gate as `transact_bridge_contract_call`
         //     above. Gating on Prague alone would allow a pre-Bridge / post-Prague block (or a
-        //     byzantine `engine_newPayloadV4` carrying a 0xf0 entry) to seal a `requests_hash`
-        //     that covers a 0xf0 entry the bridge system call did NOT execute — silent state
-        //     divergence from the network. Bridge-active strictly implies Prague-active (chain
-        //     spec invariant), so this is monotonically stricter than the old Prague gate.
-        //   * `bridge_request_raw` was supplied (build path = `attrs.bridgeRequests`; verify
-        //     path = 0xf0 entry of `payload.executionRequests`; replay path = `context_for_block`
-        //     recovers it from `BlockBody.bridge_requests`). Only a body with no bridge blob
-        //     (pre-Bridge block) yields `None`, in which case no 0xf0 entry is pushed.
-        if bridge_active {
-            if let Some(raw) = self.ctx.bridge_request_raw.as_deref() {
-                requests.push_request_with_type(bridge::BRIDGE_REQUEST_TYPE, raw.clone());
-            }
-        }
+        //     byzantine `engine_newPayloadV4` carrying a 0xf0 entry) to seal a `requests_hash` that
+        //     covers a 0xf0 entry the bridge system call did NOT execute — silent state divergence
+        //     from the network. Bridge-active strictly implies Prague-active (chain spec
+        //     invariant), so this is monotonically stricter than the old Prague gate.
+        //   * `bridge_request_raw` was supplied (build path = `attrs.bridgeRequests`; verify path =
+        //     0xf0 entry of `payload.executionRequests`; replay path = `context_for_block` recovers
+        //     it from `BlockBody.bridge_requests`). Only a body with no bridge blob (pre-Bridge
+        //     block) yields `None`, in which case no 0xf0 entry is pushed.
+        bridge::append_bridge_request(
+            bridge_active,
+            self.ctx.bridge_request_raw.as_deref(),
+            &mut requests,
+        );
 
         let mut balance_increments = post_block_balance_increments(
             &self.spec,
@@ -411,9 +417,10 @@ where
                 let data = withdrawals[0].amount_wei().to_be_bytes::<32>();
                 let mut contract = withdrawals[0].address;
                 if self.spec.is_staking_activate_at_timestamp(timestamp) {
-                    contract = self.spec.staking_contract_address().unwrap_or(address!(
-                        "0xea224dBB52F57752044c0C86aD50930091F561B9"
-                    ));
+                    contract = self
+                        .spec
+                        .staking_contract_address()
+                        .unwrap_or(address!("0xea224dBB52F57752044c0C86aD50930091F561B9"));
                 }
 
                 match self.evm.transact_system_call(
@@ -470,6 +477,22 @@ where
 
     fn receipts(&self) -> &[Self::Receipt] {
         &self.receipts
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::charged_transaction_gas;
+
+    #[test]
+    fn transaction_gas_is_floored_at_eighty_percent() {
+        assert_eq!(charged_transaction_gas(21_000, 100_000), 80_000);
+        assert_eq!(charged_transaction_gas(95_000, 100_000), 95_000);
+    }
+
+    #[test]
+    fn transaction_gas_floor_handles_extreme_limits() {
+        assert_eq!(charged_transaction_gas(0, u64::MAX), u64::MAX / 5 * 4);
     }
 }
 
