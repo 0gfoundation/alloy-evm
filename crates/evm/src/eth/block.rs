@@ -120,7 +120,11 @@ pub struct EthTxResult<H, T> {
 
 const fn charged_transaction_gas(raw_gas_used: u64, gas_limit: u64) -> u64 {
     let minimum = gas_limit / 5 * 4 + gas_limit % 5 * 4 / 5;
-    raw_gas_used.max(minimum)
+    if raw_gas_used < minimum {
+        minimum
+    } else {
+        raw_gas_used
+    }
 }
 
 impl<H, T> TxResult for EthTxResult<H, T>
