@@ -521,7 +521,9 @@ impl PrecompilesMap {
     pub fn get(&self, address: &Address) -> Option<impl Precompile + '_> {
         // First check static precompiles
         let static_result = match &self.precompiles {
-            PrecompilesKind::Builtin(precompiles) => precompiles.get_stateless(address).map(Either::Left),
+            PrecompilesKind::Builtin(precompiles) => {
+                precompiles.get_stateless(address).map(Either::Left)
+            }
             PrecompilesKind::Dynamic(dyn_precompiles) => {
                 dyn_precompiles.stateless.get(address).map(Either::Right)
             }
@@ -596,11 +598,9 @@ where
         let precompile_result = match maybe_stateless {
             Some(precompile) => {
                 let (block, tx, cfg, journaled_state, _, local) = context.all_mut();
-                let _span = tracing::trace_span!(
-                    "precompile",
-                    name = precompile.precompile_id().name(),
-                )
-                .entered();
+                let _span =
+                    tracing::trace_span!("precompile", name = precompile.precompile_id().name(),)
+                        .entered();
                 precompile.call(PrecompileInput {
                     data: inputs.input.as_bytes_local(local).as_ref(),
                     gas: inputs.gas_limit,
@@ -614,7 +614,7 @@ where
                 })
             }
             None => {
-                let input = inputs.input.as_bytes(context).into_owned();
+                let input = inputs.input.as_bytes(context).to_vec();
                 run_stateful_precompile(
                     inputs.bytecode_address,
                     &input,
@@ -628,10 +628,7 @@ where
         }
         .map_err(|e| e.to_string())?;
 
-        Ok(Some(precompile_output_to_interpreter_result(
-            precompile_result,
-            inputs.gas_limit,
-        )))
+        Ok(Some(precompile_output_to_interpreter_result(precompile_result, inputs.gas_limit)))
     }
 
     fn warm_addresses(&self) -> &AddressSet {
