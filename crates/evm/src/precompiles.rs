@@ -1189,6 +1189,26 @@ mod tests {
     }
 
     #[test]
+    fn test_stateful_precompiles_survive_dynamic_conversion() {
+        let eth_precompiles = EthPrecompiles::new(SpecId::default());
+        let stateful_addresses =
+            eth_precompiles.precompiles.stateful().iter().copied().collect::<Vec<_>>();
+        assert!(!stateful_addresses.is_empty(), "0G stateful precompiles must be registered");
+
+        let mut precompiles = PrecompilesMap::from(eth_precompiles);
+        for address in &stateful_addresses {
+            assert!(precompiles.is_stateful(address));
+            assert!(precompiles.get_stateless(address).is_none());
+        }
+
+        precompiles.ensure_dynamic_precompiles();
+        for address in &stateful_addresses {
+            assert!(precompiles.is_stateful(address));
+            assert!(precompiles.get_stateless(address).is_none());
+        }
+    }
+
+    #[test]
     fn test_precompile_lookup() {
         let eth_precompiles = EthPrecompiles::new(SpecId::default());
         let mut spec_precompiles = PrecompilesMap::from(eth_precompiles);
