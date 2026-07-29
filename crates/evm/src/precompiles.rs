@@ -473,14 +473,16 @@ impl PrecompilesMap {
                 Cow::Owned(owned) => owned,
             };
 
-            for (&addr, pc) in static_precompiles.stateless().iter() {
+            for (&addr, pc) in static_precompiles.inner() {
                 dynamic.stateless.insert(addr, DynPrecompile(Box::new(pc.clone())));
                 dynamic.addresses.insert(addr);
             }
 
-            for addr in static_precompiles.stateful().iter() {
-                dynamic.stateful.insert(*addr);
-                dynamic.addresses.insert(*addr);
+            for &addr in static_precompiles.addresses_set() {
+                if static_precompiles.is_stateful(&addr) {
+                    dynamic.stateful.insert(addr);
+                    dynamic.addresses.insert(addr);
+                }
             }
 
             self.precompiles = PrecompilesKind::Dynamic(dynamic);
@@ -521,9 +523,7 @@ impl PrecompilesMap {
     pub fn get(&self, address: &Address) -> Option<impl Precompile + '_> {
         // First check static precompiles
         let static_result = match &self.precompiles {
-            PrecompilesKind::Builtin(precompiles) => {
-                precompiles.get_stateless(address).map(Either::Left)
-            }
+            PrecompilesKind::Builtin(precompiles) => precompiles.get(address).map(Either::Left),
             PrecompilesKind::Dynamic(dyn_precompiles) => {
                 dyn_precompiles.stateless.get(address).map(Either::Right)
             }
@@ -619,6 +619,7 @@ where
                     inputs.bytecode_address,
                     &input,
                     inputs.gas_limit,
+                    inputs.reservoir,
                     inputs.caller,
                     inputs.call_value(),
                     inputs.is_static,
@@ -1191,8 +1192,13 @@ mod tests {
     #[test]
     fn test_stateful_precompiles_survive_dynamic_conversion() {
         let eth_precompiles = EthPrecompiles::new(SpecId::default());
-        let stateful_addresses =
-            eth_precompiles.precompiles.stateful().iter().copied().collect::<Vec<_>>();
+        let stateful_addresses = eth_precompiles
+            .precompiles
+            .addresses_set()
+            .iter()
+            .filter(|address| eth_precompiles.precompiles.is_stateful(address))
+            .copied()
+            .collect::<Vec<_>>();
         assert!(!stateful_addresses.is_empty(), "0G stateful precompiles must be registered");
 
         let mut precompiles = PrecompilesMap::from(eth_precompiles);
