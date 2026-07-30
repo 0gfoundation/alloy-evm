@@ -366,6 +366,7 @@ pub trait BlockExecutor {
             return Ok(None);
         }
 
+        self.prepare_transaction_commit()?;
         let gas_used = self.commit_transaction(output);
         Ok(Some(gas_used))
     }
@@ -387,6 +388,14 @@ pub trait BlockExecutor {
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError>;
+
+    /// Applies fallible executor-specific changes immediately before committing a transaction.
+    ///
+    /// Executors that split a block into multiple execution contexts can use this hook to advance
+    /// context boundaries after speculative execution and before the result is committed.
+    fn prepare_transaction_commit(&mut self) -> Result<(), BlockExecutionError> {
+        Ok(())
+    }
 
     /// Commits a previously executed transaction's state changes.
     ///
