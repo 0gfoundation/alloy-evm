@@ -3,7 +3,10 @@
 
 use crate::Evm;
 use alloy_consensus::{Eip658Value, ReceiptEnvelope, TxEnvelope, TxType};
-use revm::{context::result::ExecutionResult, state::EvmState};
+use revm::{
+    context::result::{ExecutionResult, InvalidTransaction},
+    state::EvmState,
+};
 
 /// Context for building a receipt.
 #[derive(Debug)]
@@ -34,6 +37,23 @@ pub trait ReceiptBuilder {
         &self,
         ctx: ReceiptBuilderCtx<'_, Self::Transaction, E>,
     ) -> Self::Receipt;
+
+    /// Builds the synthetic receipt for a transaction that was invalid at final execution
+    /// state and is therefore applied as a protocol-level no-op. Used only by executors
+    /// running with the invalid-transaction skip enabled, where the block's transaction
+    /// list is fixed by consensus before execution and cannot drop members.
+    ///
+    /// Returning `None` (the default) means this receipt type does not support synthetic
+    /// skip receipts and the executor must propagate the validation error instead.
+    fn build_skipped_receipt(
+        &self,
+        tx: &Self::Transaction,
+        cumulative_gas_used: u64,
+        error: &InvalidTransaction,
+    ) -> Option<Self::Receipt> {
+        let _ = (tx, cumulative_gas_used, error);
+        None
+    }
 }
 
 /// Receipt builder operating on Alloy types.

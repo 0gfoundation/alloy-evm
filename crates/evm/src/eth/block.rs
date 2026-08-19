@@ -12,7 +12,7 @@ use crate::{
         state_changes::{balance_increment_state, post_block_balance_increments},
         system_calls::bridge,
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockExecutorFactory,
-        BlockExecutorFor, BlockValidationError, ExecutableTx, OnStateHook,
+        BlockExecutorFor, BlockValidationError, CommitChanges, ExecutableTx, OnStateHook,
         StateChangePostBlockSource, StateChangeSource, SystemCaller,
     },
     Database, Evm, EvmFactory, FromRecoveredTx, FromTxWithEncoded,
@@ -85,6 +85,11 @@ pub struct EthBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     receipts: Vec<R::Receipt>,
     /// Total gas used by transactions in this block.
     gas_used: u64,
+    /// When enabled, a transaction that fails EVM-level validation (`InvalidTransaction`)
+    /// is applied as a no-op with a synthetic receipt from
+    /// [`ReceiptBuilder::build_skipped_receipt`] instead of failing the whole block.
+    /// Required when the transaction list is fixed by consensus before execution.
+    skip_invalid_tx: bool,
 }
 
 impl<'a, Evm, Spec, R> EthBlockExecutor<'a, Evm, Spec, R>
@@ -102,7 +107,14 @@ where
             system_caller: SystemCaller::new(spec.clone()),
             spec,
             receipt_builder,
+            skip_invalid_tx: false,
         }
+    }
+
+    /// Enables or disables the invalid-transaction skip path (defaults to disabled).
+    pub fn with_skip_invalid_tx(mut self, skip_invalid_tx: bool) -> Self {
+        self.skip_invalid_tx = skip_invalid_tx;
+        self
     }
 }
 
@@ -154,6 +166,46 @@ where
             let hash = tx.tx().trie_hash();
             BlockExecutionError::evm(err, hash)
         })
+    }
+
+    fn execute_transaction_with_commit_condition(
+        &mut self,
+        tx: impl ExecutableTx<Self>,
+        f: impl FnOnce(
+            &revm::context::result::ExecutionResult<<Self::Evm as Evm>::HaltReason>,
+        ) -> CommitChanges,
+    ) -> Result<Option<u64>, BlockExecutionError> {
+        let output = match self.execute_transaction_without_commit(&tx) {
+            Ok(output) => output,
+            // A consensus-ordered transaction list cannot drop members: apply the invalid
+            // transaction as a no-op carrying a synthetic receipt, so the tx and receipt
+            // lists stay 1:1 and the skip is part of the state root rather than a silent
+            // list mutation. Only EVM-level validation errors take this path; database
+            // and internal errors stay fatal.
+            Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                hash,
+                error,
+            })) if self.skip_invalid_tx => {
+                let receipt = error.as_invalid_tx_err().and_then(|invalid| {
+                    self.receipt_builder.build_skipped_receipt(tx.tx(), self.gas_used, invalid)
+                });
+                return match receipt {
+                    Some(receipt) => {
+                        self.receipts.push(receipt);
+                        Ok(Some(0))
+                    }
+                    None => Err(BlockValidationError::InvalidTx { hash, error }.into()),
+                };
+            }
+            Err(err) => return Err(err),
+        };
+
+        if !f(&output.result).should_commit() {
+            return Ok(None);
+        }
+
+        let gas_used = self.commit_transaction(output, tx)?;
+        Ok(Some(gas_used))
     }
 
     fn commit_transaction(
@@ -414,13 +466,24 @@ pub struct EthBlockExecutorFactory<
     spec: Spec,
     /// EVM factory.
     evm_factory: EvmFactory,
+    /// Whether executors created by this factory skip EVM-invalid transactions with a
+    /// synthetic receipt instead of failing the block. See
+    /// [`EthBlockExecutor::with_skip_invalid_tx`].
+    skip_invalid_tx: bool,
 }
 
 impl<R, Spec, EvmFactory> EthBlockExecutorFactory<R, Spec, EvmFactory> {
     /// Creates a new [`EthBlockExecutorFactory`] with the given spec, [`EvmFactory`], and
     /// [`ReceiptBuilder`].
     pub const fn new(receipt_builder: R, spec: Spec, evm_factory: EvmFactory) -> Self {
-        Self { receipt_builder, spec, evm_factory }
+        Self { receipt_builder, spec, evm_factory, skip_invalid_tx: false }
+    }
+
+    /// Enables or disables the invalid-transaction skip path on executors created by this
+    /// factory (defaults to disabled).
+    pub const fn with_skip_invalid_tx(mut self, skip_invalid_tx: bool) -> Self {
+        self.skip_invalid_tx = skip_invalid_tx;
+        self
     }
 
     /// Exposes the receipt builder.
@@ -465,5 +528,6 @@ where
         I: Inspector<EvmF::Context<&'a mut State<DB>>> + 'a,
     {
         EthBlockExecutor::new(evm, ctx, &self.spec, &self.receipt_builder)
+            .with_skip_invalid_tx(self.skip_invalid_tx)
     }
 }
