@@ -63,6 +63,8 @@ trait EvmInternalsTr: Database<Error = ErasedError> + Debug {
 
     fn touch_account(&mut self, address: Address);
 
+    fn balance_incr(&mut self, address: Address, value: U256) -> Result<(), EvmInternalsError>;
+
     fn set_code(&mut self, address: Address, code: Bytecode);
 
     fn sstore(
@@ -134,6 +136,10 @@ where
 
     fn touch_account(&mut self, address: Address) {
         self.0.touch_account(address);
+    }
+
+    fn balance_incr(&mut self, address: Address, value: U256) -> Result<(), EvmInternalsError> {
+        self.0.balance_incr(address, value).map_err(EvmInternalsError::database)
     }
 
     fn set_code(&mut self, address: Address, code: Bytecode) {
@@ -220,6 +226,14 @@ impl<'a> EvmInternals<'a> {
     /// Touches the account.
     pub fn touch_account(&mut self, address: Address) {
         self.internals.touch_account(address);
+    }
+
+    /// Increases the balance of an account through the journal (saturating), touching it.
+    ///
+    /// Unlike changing the balance on the account returned by [`Self::load_account`], the change is
+    /// journaled, so it is undone if the calling frame reverts.
+    pub fn balance_incr(&mut self, address: Address, value: U256) -> Result<(), EvmInternalsError> {
+        self.internals.balance_incr(address, value)
     }
 
     /// Sets bytecode to the account.
