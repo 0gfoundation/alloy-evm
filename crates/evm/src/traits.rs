@@ -232,6 +232,9 @@ impl<'a> EvmInternals<'a> {
     ///
     /// Unlike changing the balance on the account returned by [`Self::load_account`], the change is
     /// journaled, so it is undone if the calling frame reverts.
+    ///
+    /// It warms the account without charging gas and does not check for a static context; both are
+    /// up to the calling precompile.
     pub fn balance_incr(&mut self, address: Address, value: U256) -> Result<(), EvmInternalsError> {
         self.internals.balance_incr(address, value)
     }

@@ -816,13 +816,12 @@ mod tests {
         ctx.journaled_state.checkpoint_revert(checkpoint);
         assert_eq!(balance(&mut ctx), U256::ZERO);
 
-        // Kept when it commits, and the account is touched so it reaches the state diff
-        let checkpoint = ctx.journaled_state.checkpoint();
+        // Kept when it commits, and the account is touched
+        ctx.journaled_state.checkpoint();
         EvmInternals::new(&mut ctx.journaled_state, &ctx.block)
             .balance_incr(recipient, U256::from(5))
             .unwrap();
         ctx.journaled_state.checkpoint_commit();
-        let _ = checkpoint;
         assert_eq!(balance(&mut ctx), U256::from(5));
         assert!(ctx.journaled_state.load_account(recipient).unwrap().data.is_touched());
 
