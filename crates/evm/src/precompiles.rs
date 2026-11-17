@@ -798,6 +798,41 @@ mod tests {
     };
 
     #[test]
+    fn balance_incr_is_journaled() {
+        use revm::context_interface::JournalTr;
+
+        let mut ctx = EthEvmContext::new(EmptyDB::default(), Default::default());
+        let recipient = address!("0x00000000000000000000000000000000000000aa");
+        let balance = |ctx: &mut EthEvmContext<EmptyDB>| {
+            ctx.journaled_state.load_account(recipient).unwrap().data.info.balance
+        };
+
+        // Undone when the frame reverts
+        let checkpoint = ctx.journaled_state.checkpoint();
+        EvmInternals::new(&mut ctx.journaled_state, &ctx.block)
+            .balance_incr(recipient, U256::from(7))
+            .unwrap();
+        assert_eq!(balance(&mut ctx), U256::from(7));
+        ctx.journaled_state.checkpoint_revert(checkpoint);
+        assert_eq!(balance(&mut ctx), U256::ZERO);
+
+        // Kept when it commits, and the account is touched
+        ctx.journaled_state.checkpoint();
+        EvmInternals::new(&mut ctx.journaled_state, &ctx.block)
+            .balance_incr(recipient, U256::from(5))
+            .unwrap();
+        ctx.journaled_state.checkpoint_commit();
+        assert_eq!(balance(&mut ctx), U256::from(5));
+        assert!(ctx.journaled_state.load_account(recipient).unwrap().data.is_touched());
+
+        // Saturates instead of overflowing
+        EvmInternals::new(&mut ctx.journaled_state, &ctx.block)
+            .balance_incr(recipient, U256::MAX)
+            .unwrap();
+        assert_eq!(balance(&mut ctx), U256::MAX);
+    }
+
+    #[test]
     fn test_map_precompile() {
         let eth_precompiles = EthPrecompiles::default();
         let mut spec_precompiles = PrecompilesMap::from(eth_precompiles);
